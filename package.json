@@ -1,0 +1,35 @@
+{
+  "name": "walletos",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "setup:wallet": "tsx scripts/setup-wallet.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "faucet": "tsx scripts/faucet.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@coinbase/cdp-sdk": "^1.51.2",
+    "@upstash/redis": "^1.38.0",
+    "dotenv": "^17.4.2",
+    "lucide-react": "^0.468.0",
+    "next": "16.2.9",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.9",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.4",
+    "typescript": "^5"
+  }
+}
