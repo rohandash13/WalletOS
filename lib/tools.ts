@@ -148,6 +148,23 @@ export const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "rebalance_funds",
+    description:
+      "Move USDC from a holding bucket (stable_invest, savings, or rent) back into Available — e.g. when the user says they need cash back ('I need $200 back'). Internal ledger move, not an external transfer. Defaults to pulling from stable_invest. Avoid touching protected rent unless the user explicitly asks.",
+    input_schema: {
+      type: "object",
+      properties: {
+        amount: { type: "number", description: "USDC to move back to Available" },
+        fromBucket: {
+          type: "string",
+          enum: BUCKETS,
+          description: "Bucket to pull from (default 'stable_invest')",
+        },
+      },
+      required: ["amount"],
+    },
+  },
+  {
     name: "explain_decision",
     description:
       "Record a plain-English explanation of what you did and why, for the user-facing 'why' panel. Call this last to teach the user about the financial decision.",
@@ -199,6 +216,8 @@ export async function executeTool(
         return { ok: true, result: await handleCreateAutomation(input) };
       case "route_to_agent":
         return { ok: true, result: await handleRouteToAgent(input) };
+      case "rebalance_funds":
+        return { ok: true, result: await handleRebalance(input) };
       case "explain_decision":
         return { ok: true, result: await handleExplain(input) };
       default:
@@ -428,6 +447,46 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
     live: plan.live,
     portfolio: updated,
   };
+}
+
+async function handleRebalance(input: Record<string, unknown>) {
+  const amount = Number(input.amount);
+  const fromBucket: BucketId = isBucket(input.fromBucket) ? input.fromBucket : "stable_invest";
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error(`Invalid amount: ${amount}`);
+
+  const portfolio = await getPortfolio();
+  if (portfolio[fromBucket] < amount) {
+    throw new Error(
+      `Insufficient ${BUCKET_LABELS[fromBucket]} balance: ${portfolio[fromBucket]} < ${amount}`,
+    );
+  }
+
+  await moveBetweenBuckets(fromBucket, "available", amount);
+  const updated = await getPortfolio();
+
+  const tx: TxRecord = {
+    id: genId("tx"),
+    kind: "internal",
+    type: "rebalance",
+    amount,
+    token: USDC,
+    from: BUCKET_LABELS[fromBucket],
+    to: BUCKET_LABELS.available,
+    fromBucket,
+    toBucket: "available",
+    note: `Moved ${amount} USDC from ${BUCKET_LABELS[fromBucket]} back to Available`,
+    status: "confirmed",
+    ts: Date.now(),
+  };
+  await addTx(tx);
+
+  await publishEvent(
+    "portfolio",
+    `Moved ${amount} USDC from ${BUCKET_LABELS[fromBucket]} back to Available`,
+    { bucket: "available", balance: updated.available, delta: amount },
+  );
+
+  return { amount, fromBucket, toBucket: "available", portfolio: updated };
 }
 
 async function handleExplain(input: Record<string, unknown>) {

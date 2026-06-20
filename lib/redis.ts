@@ -36,6 +36,7 @@ interface KV {
   incr(key: string): Promise<number>;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  del(key: string): Promise<void>;
 }
 
 class MemoryKV implements KV {
@@ -73,6 +74,11 @@ class MemoryKV implements KV {
   async set(key: string, value: string) {
     this.s.set(key, value);
   }
+  async del(key: string) {
+    this.h.delete(key);
+    this.l.delete(key);
+    this.s.delete(key);
+  }
 }
 
 class UpstashKV implements KV {
@@ -101,6 +107,9 @@ class UpstashKV implements KV {
   }
   async set(key: string, value: string) {
     await this.redis.set(key, value);
+  }
+  async del(key: string) {
+    await this.redis.del(key);
   }
 }
 
@@ -243,6 +252,12 @@ export async function addAutomation(a: Automation): Promise<void> {
 export async function seedDemoPaycheck(amount = 2000, reset = false): Promise<Portfolio> {
   if (reset) {
     for (const b of BUCKETS) await setBucket(b, 0);
+    // Full demo restart: clear the tx log, event stream, automations, and policy.
+    await kv.del(k.tx());
+    await kv.del(k.events());
+    await kv.del(k.eventsSeq());
+    await kv.del(k.automations());
+    await kv.del(k.policy());
   }
   await adjustBucket("available", amount);
   const portfolio = await getPortfolio();

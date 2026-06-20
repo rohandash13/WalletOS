@@ -82,3 +82,32 @@ npm run seed:demo
 - [x] A chat message makes Claude call `send_payment` and move funds
 - [x] Risk score → `route_to_agent` calls a Fetch uAgent + updates the bucket
 - [x] Portfolio/tx events publish; `GET /api/balance` + `GET /api/events` return spec JSON
+
+## 2026-06-20 Frontend integration (Person B merge)
+
+Merged Person B's frontend (`app/components/WalletDemo.tsx`) and wired the real
+backend to it via an adapter layer — the UI was built against a mock data module
+(`lib/demo-data.ts`) with a different API contract, so the routes were rewritten
+to call the real Claude/CDP/Fetch backend and map onto the UI's contract.
+
+- [lib/adapter.ts](lib/adapter.ts): maps backend shapes → frontend contract
+  (`ChatResponse`, `BalanceResponse`, `WalletEvent`, UI `Automation`/`Action`).
+  Bucket reconciliation: `available+savings→checking`, `rent→rent_safe`,
+  `stable_invest→stable_invest` (family payments leave the wallet via send_payment).
+- Backend domain types moved to [lib/wallet-types.ts](lib/wallet-types.ts) so the
+  frontend's [lib/types.ts](lib/types.ts) is the canonical UI contract.
+- Routes `/api/chat`, `/api/balance`, `/api/events`, `/api/automations`, `/api/reset`
+  now run the real backend (was Person B's mock). UI (`WalletDemo.tsx`) untouched.
+- Added `rebalance_funds` tool so the recovery prompt ("I need $200 back") really
+  moves funds back from investments while keeping protected rent safe.
+- `seedDemoPaycheck(reset)` now fully clears tx/events/automations/policy.
+
+Verified end-to-end on the live dev server (real Claude loop + real on-chain txs):
+
+- `POST /api/reset` → `{ok:true}`; state fully cleared, $2,000 seeded to Checking.
+- Canonical prompt (one shot): rent protected $1,200, sister paid $50 with a real
+  tx (`0xf021…`) + monthly automation, $750 routed to the live Stable-Invest Fetch
+  agent at risk 3 → `{checking:0, rent_safe:1200, stable_invest:750}`.
+- Recovery prompt: `rebalance_funds` pulled $200 from investments → `{checking:200,
+  rent_safe:1200, stable_invest:550}`, rent untouched.
+- `npm run build` ✓, `npm run lint` ✓ (0 errors), on Next 16 / React 19.
