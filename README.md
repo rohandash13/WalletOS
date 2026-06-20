@@ -109,12 +109,15 @@ app/
   components/     # Chat · Automations · Marketplace · PortfolioPanel
 lib/
   wallet.ts       # CDP WalletService (balance, transfer, faucet, spending policy)
-  tools.ts        # Claude tool definitions + dispatch
+  tools.ts        # Claude tool definitions + dispatch (only code that moves money)
   agent.ts        # Claude tool-use loop
-  redis.ts        # realtime events + bucket ledger
-agent-service/    # Fetch AI uAgent marketplace (Python)
+  marketplace.ts  # Fetch uAgent registry, risk gating, /route caller
+  redis.ts        # realtime events + bucket ledger (Upstash or in-memory)
+  types.ts        # shared API/domain shapes
+agent-service/    # Fetch AI uAgent marketplace (Python): stable-invest / savings / bill-pay
 scripts/
-  setup-wallet.ts # one-time testnet wallet creation + funding
+  setup-wallet.ts # one-time testnet wallet creation + funding + transfer proof
+  seed-demo.ts    # seed the demo paycheck via the running server
 ```
 
 ## Status & roadmap
@@ -123,8 +126,8 @@ scripts/
 - [x] Real on-chain USDC transfer, verifiable on `sepolia.basescan.org`
 - [x] Claude tool loop: parse intent → execute → explain
 - [x] Risk-score routing + realtime portfolio events
-- [ ] Fetch AI uAgent agent-to-agent payments *(in progress)*
-- [ ] Recurring automations via Orkes
+- [x] Fetch AI uAgent marketplace (Stable-Invest / Savings / Bill-Pay) + on-chain agent-to-agent payments, ASI:One discoverable
+- [ ] Recurring automations via Orkes *(create_automation works in-process; Orkes is the durable-workflow upgrade)*
 - [ ] Deepgram voice interface
 
 ## ⚠️ Disclaimer
