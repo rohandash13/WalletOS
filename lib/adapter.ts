@@ -54,11 +54,12 @@ export function toUiPortfolio(p: LedgerPortfolio): UiPortfolio {
 
 export function toBuckets(p: LedgerPortfolio): Bucket[] {
   const ui = toUiPortfolio(p);
+  // Three meaningful buckets only — Family Payment was always $0 (sent funds leave
+  // the wallet), so it's dropped to reduce clutter.
   return [
-    { name: "Checking", key: "checking", balance: ui.checking, protected: false },
-    { name: "Rent Safe", key: "rent_safe", balance: ui.rent_safe, protected: true },
-    { name: "Family Payment", key: "family_payment", balance: ui.family_payment, protected: false },
-    { name: "Stable-Invest", key: "stable_invest", balance: ui.stable_invest, protected: false },
+    { name: "Available", key: "checking", balance: ui.checking, protected: false },
+    { name: "Protected", key: "rent_safe", balance: ui.rent_safe, protected: true },
+    { name: "Invested", key: "stable_invest", balance: ui.stable_invest, protected: false },
   ];
 }
 
@@ -222,6 +223,7 @@ export async function toChatResponse(turn: AgentTurn): Promise<ChatResponse> {
     assistantMessage: turn.reply,
     actions: toActions(turn.toolCalls),
     portfolio: toUiPortfolio(portfolio),
+    buckets: toBuckets(portfolio),
     events: toWalletEvents(events),
     automations: autos.map(toUiAutomation),
     riskScore: extractRisk(turn.toolCalls),

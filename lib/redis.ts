@@ -140,6 +140,7 @@ const k = {
   eventsSeq: (u = USER_ID) => `events:seq:${u}`,
   policy: (u = USER_ID) => `policy:${u}`,
   automations: (u = USER_ID) => `automations:${u}`,
+  agents: () => `agents:dynamic`,
 };
 
 /* ------------------------------ portfolio --------------------------------- */
@@ -286,4 +287,29 @@ export async function seedDemoPaycheck(amount = 2000, reset = false): Promise<Po
 export async function listAutomations(limit = 50): Promise<Automation[]> {
   const raw = await kv.lrange(k.automations(), 0, limit - 1);
   return raw.map((r) => JSON.parse(r) as Automation);
+}
+
+/* --------------------- dynamic (user-created) agents ---------------------- */
+
+/** A marketplace agent created at runtime (persisted JSON). */
+export interface StoredAgent {
+  id: string;
+  title: string;
+  description: string;
+  riskBand: [number, number];
+  minAmount: number;
+  kind: "invest" | "reserve";
+  strategy: string;
+  allocation: Record<string, number>;
+  projectedApy: number;
+  createdAt: number;
+}
+
+export async function saveDynamicAgent(agent: StoredAgent): Promise<void> {
+  await kv.lpush(k.agents(), JSON.stringify(agent));
+}
+
+export async function listDynamicAgents(limit = 50): Promise<StoredAgent[]> {
+  const raw = await kv.lrange(k.agents(), 0, limit - 1);
+  return raw.map((r) => JSON.parse(r) as StoredAgent);
 }

@@ -27,7 +27,7 @@ import {
   type TxRecord,
   type Automation,
 } from "./wallet-types";
-import { selectAgent, routeViaAgent } from "./marketplace";
+import { selectAgent, resolveAgent, routeViaAgent } from "./marketplace";
 
 const USDC = "usdc" as const;
 
@@ -132,14 +132,14 @@ export const tools: Anthropic.Tool[] = [
   {
     name: "route_to_agent",
     description:
-      "Route funds to a specialized Fetch AI marketplace agent based on the user's risk score (1=conservative .. 10=aggressive). The agent is auto-selected by risk (low risk → Savings, moderate → Stable-Invest) unless you name one. This calls the live uAgent for its strategy and makes a real on-chain agent-to-agent USDC transfer. Use for 'invest the rest'.",
+      "Route funds to a specialized Fetch AI marketplace agent based on the user's risk score (1=conservative .. 10=aggressive). The agent is auto-selected by risk AND amount: low risk → Savings/Stable-Invest, mid → Balanced-Growth, high risk with enough funds → Growth (min $500) or High-Yield (min $1000). Omit the agent field to auto-select. This calls the live uAgent for its strategy and makes a real on-chain agent-to-agent USDC transfer. Use for 'invest the rest'.",
     input_schema: {
       type: "object",
       properties: {
         agent: {
           type: "string",
-          enum: ["stable_invest", "savings", "bill_pay"],
-          description: "Optional explicit agent; omit to auto-select by risk",
+          description:
+            "Optional explicit agent id (e.g. savings, stable_invest, balanced_growth, growth, high_yield, or a user-created agent id). Omit to auto-select by risk + amount.",
         },
         amount: { type: "number", description: "USDC to route" },
         riskScore: { type: "number", description: "User risk score 1-10" },
@@ -368,15 +368,15 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
   const riskScore = Number(input.riskScore);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error(`Invalid amount: ${amount}`);
 
-  const agent = selectAgent(
-    Number.isFinite(riskScore) ? riskScore : 5,
-    input.agent ? String(input.agent) : undefined,
-  );
-
   const portfolio = await getPortfolio();
   if (portfolio.available < amount) {
     throw new Error(`Insufficient Available balance: ${portfolio.available} < ${amount}`);
   }
+
+  const preferred = input.agent ? String(input.agent) : undefined;
+  const agent =
+    (preferred ? await resolveAgent(preferred) : undefined) ??
+    selectAgent(Number.isFinite(riskScore) ? riskScore : 5, amount, preferred);
 
   // 1. Ask the Fetch uAgent for its allocation/decision (local fallback if down).
   const plan = await routeViaAgent(agent, amount, riskScore);

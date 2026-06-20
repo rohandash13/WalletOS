@@ -62,6 +62,50 @@ def allocate(agent_type: str, amount: float, risk_score: int) -> dict:
             "earning ~{apy}% with no lockup, so you can pull it back any time."
         )
 
+    elif agent_type == "balanced_growth":
+        # Balanced mix: stable yield core + blue-chip staking + a little DeFi.
+        stable = max(0.35, 0.70 - r * 0.04)
+        allocation = _round_alloc({
+            "stablecoin_yield": stable,
+            "blue_chip_staking": (1 - stable) * 0.6,
+            "defi_liquidity": (1 - stable) * 0.4,
+        })
+        apy = round(6.0 + r * 0.8, 2)                 # ~10% .. 14%
+        strategy = "Balanced stable yield + blue-chip staking for steady growth"
+        explanation = (
+            "I placed {amount} USDC with Balanced-Growth at {risk}/10 risk — a blend of "
+            "stablecoin yield and blue-chip staking with a small DeFi sleeve. ~{apy}% APY."
+        )
+
+    elif agent_type == "growth":
+        # Growth-tilted: blue-chip crypto + DeFi liquidity, more volatility.
+        blue = min(0.60, 0.30 + r * 0.04)
+        allocation = _round_alloc({
+            "blue_chip_staking": blue,
+            "defi_liquidity": (1 - blue) * 0.6,
+            "stablecoin_yield": (1 - blue) * 0.4,
+        })
+        apy = round(9.0 + r * 1.2, 2)                 # ~17% .. 21%
+        strategy = "Blue-chip crypto + DeFi liquidity for higher growth"
+        explanation = (
+            "I placed {amount} USDC with Growth at {risk}/10 risk — majority blue-chip "
+            "crypto and DeFi liquidity for higher returns and more volatility. ~{apy}% APY."
+        )
+
+    elif agent_type == "high_yield":
+        # Aggressive: DeFi yield farming + momentum basket.
+        allocation = _round_alloc({
+            "defi_yield_farming": 0.55,
+            "momentum_basket": 0.30,
+            "blue_chip_staking": 0.15,
+        })
+        apy = round(12.0 + r * 1.6, 2)                # ~25% .. 28%
+        strategy = "Aggressive DeFi yield farming + momentum basket"
+        explanation = (
+            "I placed {amount} USDC with High-Yield at {risk}/10 risk — aggressive DeFi "
+            "yield farming and a momentum basket. High risk, high potential ~{apy}% APY."
+        )
+
     elif agent_type == "bill_pay":
         # Reserve held fully liquid to cover upcoming obligations.
         allocation = _round_alloc({
