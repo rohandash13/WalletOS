@@ -27,6 +27,7 @@ import type {
   BalanceResponse,
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
+import { USER_ID } from "./wallet-types";
 import { getPortfolio, getEventsSince, listAutomations } from "./redis";
 import { getBalanceSnapshot, automationLabel } from "./tools";
 
@@ -204,11 +205,14 @@ function extractWhy(toolCalls: AgentToolCall[]): string | undefined {
 
 /* ---------------------------------- chat ---------------------------------- */
 
-export async function toChatResponse(turn: AgentTurn): Promise<ChatResponse> {
+export async function toChatResponse(
+  turn: AgentTurn,
+  userId: string = USER_ID,
+): Promise<ChatResponse> {
   const [portfolio, events, autos] = await Promise.all([
-    getPortfolio(),
-    getEventsSince(0),
-    listAutomations(),
+    getPortfolio(userId),
+    getEventsSince(0, 100, userId),
+    listAutomations(50, userId),
   ]);
   return {
     assistantMessage: turn.reply,

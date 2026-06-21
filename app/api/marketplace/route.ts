@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { allAgents, previewApy } from "@/lib/marketplace";
 import { createAgentFromGoal } from "@/lib/agent-factory";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,9 @@ async function pingOnline(endpoint?: string): Promise<boolean> {
 }
 
 export async function GET() {
+  const session = await requireAuth();
+  if (session.response) return session.response;
+
   const agents = await allAgents();
   const withStatus = await Promise.all(
     agents.map(async (a) => ({
@@ -37,8 +41,12 @@ export async function GET() {
       dynamic: !!a.dynamic,
       strategy: a.plan?.strategy,
       projectedApy: a.kind === "invest" ? previewApy(a) : undefined,
-      // Dynamic agents run on the shared engine (always available); built-ins ping.
-      online: a.dynamic ? true : await pingOnline(a.endpoint),
+      // Dynamic agents and local dev built-ins can route through the shared
+      // strategy fallback even when a uAgent health endpoint is not running.
+      online:
+        a.dynamic || process.env.NODE_ENV !== "production"
+          ? true
+          : await pingOnline(a.endpoint),
     })),
   );
   return NextResponse.json({ agents: withStatus });
@@ -46,6 +54,9 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
     const body = await req.json().catch(() => ({}));
     const goal = typeof body?.goal === "string" ? body.goal.trim() : "";
     if (!goal) {
