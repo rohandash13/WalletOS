@@ -65,6 +65,7 @@ export type ChatResponse = {
   events: WalletEvent[];
   automations?: Automation[];
   riskScore?: number;
+  approvalThreshold?: number;
   why?: string;
 };
 

@@ -399,6 +399,7 @@ export function WalletDemo({
       setEvents(body.events ?? events);
       setAutomations(body.automations ?? automations);
       setRiskScore((prev) => body.riskScore ?? prev);
+      setApprovalThreshold((prev) => body.approvalThreshold ?? prev);
       setWhy(body.why ?? why);
     } catch {
       setMessages((c) => [

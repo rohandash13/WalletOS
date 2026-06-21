@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
 
     const fast = body?.fast === true;
     const turn = await runAgent(message, session.userId, { fast });
-    return NextResponse.json(await toChatResponse(turn, session.userId));
+    return NextResponse.json(await toChatResponse(turn, session.userId, message));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });

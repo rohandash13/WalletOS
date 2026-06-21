@@ -28,7 +28,7 @@ import type {
   BalanceResponse,
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
-import { getPortfolio, getEventsSince, listAutomations } from "./redis";
+import { getPortfolio, getEventsSince, listAutomations, getStoredPolicy } from "./redis";
 import { getBalanceSnapshot, automationLabel } from "./tools";
 
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
@@ -204,6 +204,29 @@ function extractRisk(toolCalls: AgentToolCall[]): number | undefined {
   return undefined;
 }
 
+function normalizeRisk(n: number): number | undefined {
+  if (!Number.isFinite(n)) return undefined;
+  return Math.max(1, Math.min(10, Math.round(n)));
+}
+
+/** Pull a risk score the user stated in plain text, so the badge updates live. */
+export function extractRiskFromText(text: string): number | undefined {
+  const patterns = [
+    /(?:risk|comfort)[^\d]{0,20}(\d{1,2})(?:\s*(?:\/|out of)\s*10)?/i,
+    /(\d{1,2})\s*(?:\/|out of)\s*10\s*(?:on\s*)?(?:risk)?/i,
+    /i['’]?\s*m\s*a?\s*(\d{1,2})\s*(?:\/|out of)\s*10/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const score = match ? normalizeRisk(Number(match[1])) : undefined;
+    if (score != null) return score;
+  }
+  if (/\blow[-\s]?risk\b|\bconservative\b/i.test(text)) return 3;
+  if (/\bmedium[-\s]?risk\b|\bmoderate\b|\bbalanced\b/i.test(text)) return 5;
+  if (/\bhigh[-\s]?risk\b|\baggressive\b/i.test(text)) return 8;
+  return undefined;
+}
+
 function extractWhy(toolCalls: AgentToolCall[]): string | undefined {
   // Last explain_decision summary wins.
   for (let i = toolCalls.length - 1; i >= 0; i--) {
@@ -220,12 +243,18 @@ function extractWhy(toolCalls: AgentToolCall[]): string | undefined {
 export async function toChatResponse(
   turn: AgentTurn,
   userId: string = USER_ID,
+  userText?: string,
 ): Promise<ChatResponse> {
-  const [portfolio, events, autos] = await Promise.all([
+  const [portfolio, events, autos, policy] = await Promise.all([
     getPortfolio(userId),
     getEventsSince(0, 100, userId),
     listAutomations(50, userId),
+    getStoredPolicy(userId),
   ]);
+  // Prefer a risk score the agent acted on; otherwise one the user stated in text,
+  // so saying "I'm a 3 out of 10" mid-chat updates the badge.
+  const riskScore =
+    extractRisk(turn.toolCalls) ?? (userText ? extractRiskFromText(userText) : undefined);
   return {
     assistantMessage: turn.reply,
     actions: toActions(turn.toolCalls),
@@ -233,7 +262,8 @@ export async function toChatResponse(
     buckets: toBuckets(portfolio),
     events: toWalletEvents(events),
     automations: autos.map(toUiAutomation),
-    riskScore: extractRisk(turn.toolCalls),
+    riskScore,
+    approvalThreshold: policy?.approvalThreshold,
     why: extractWhy(turn.toolCalls) ?? turn.reply,
   };
 }
