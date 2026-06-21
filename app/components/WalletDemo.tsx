@@ -70,6 +70,17 @@ type AgentInvestment = {
   explorerUrl: string;
 };
 
+type PendingApproval = {
+  id: string;
+  kind: "transfer" | "invest";
+  amount: number;
+  to?: string;
+  agentId?: string;
+  riskScore?: number;
+  note?: string;
+  createdAt: number;
+};
+
 const PRIMARY_PROMPT =
   "I get paid $2k on the 1st. Send my sister $50 every month, keep rent safe, and invest the rest low-risk - I'm a 3 out of 10 on risk.";
 const RECOVERY_PROMPT = "Actually, I need $200 back.";
@@ -219,6 +230,7 @@ export function WalletDemo({
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [agents, setAgents] = useState<MarketAgent[]>([]);
   const [investments, setInvestments] = useState<AgentInvestment[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
   // Undecided until the user picks a risk score in the chat onboarding.
   const [riskScore, setRiskScore] = useState<number | null>(null);
@@ -247,7 +259,7 @@ export function WalletDemo({
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 5000);
     try {
-      const [bal, ev, au] = await Promise.all([
+      const [bal, ev, au, ap] = await Promise.all([
         fetch(`/api/balance?userId=${authUser.userId}`, {
           cache: "no-store",
           headers: authHeaders,
@@ -259,6 +271,11 @@ export function WalletDemo({
           signal: controller.signal,
         }),
         fetch(`/api/automations?userId=${authUser.userId}`, {
+          cache: "no-store",
+          headers: authHeaders,
+          signal: controller.signal,
+        }),
+        fetch(`/api/approvals`, {
           cache: "no-store",
           headers: authHeaders,
           signal: controller.signal,
@@ -293,6 +310,8 @@ export function WalletDemo({
       if (ev.ok) setEvents(((await ev.json()) as { events: WalletEvent[] }).events);
       if (au.ok)
         setAutomations(((await au.json()) as { automations: Automation[] }).automations);
+      if (ap.ok)
+        setPendingApprovals(((await ap.json()) as { approvals: PendingApproval[] }).approvals);
     } catch {
       /* keep last state */
     } finally {
@@ -436,6 +455,20 @@ export function WalletDemo({
     void submitMessage(
       `I'm a ${riskScore} out of 10 on risk, and I want to approve anything over $${threshold} before it moves. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
     );
+  }
+
+  async function resolveApproval(id: string, action: "approve" | "decline") {
+    setPendingApprovals((cur) => cur.filter((p) => p.id !== id)); // optimistic
+    try {
+      await fetch("/api/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ id, action }),
+      });
+    } catch {
+      /* refresh will restore it if it failed */
+    }
+    void refreshLiveData();
   }
 
   async function resetDemo() {
@@ -582,6 +615,8 @@ export function WalletDemo({
               messages={messages}
               actions={actions}
               setupStage={setupStage}
+              pendingApprovals={pendingApprovals}
+              onResolveApproval={resolveApproval}
               onPickRisk={pickRisk}
               onFinishSetup={finishSetup}
               onInputChange={setInput}
@@ -640,6 +675,8 @@ function ChatPanel({
   messages,
   actions,
   setupStage,
+  pendingApprovals,
+  onResolveApproval,
   onPickRisk,
   onFinishSetup,
   onInputChange,
@@ -652,6 +689,8 @@ function ChatPanel({
   messages: Message[];
   actions: Action[];
   setupStage: "risk" | "approval" | "done";
+  pendingApprovals: PendingApproval[];
+  onResolveApproval: (id: string, action: "approve" | "decline") => void;
   onPickRisk: (n: number) => void;
   onFinishSetup: (threshold: number) => void;
   onInputChange: (v: string) => void;
@@ -717,6 +756,43 @@ function ChatPanel({
           </div>
         )}
       </div>
+
+      {pendingApprovals.length > 0 && (
+        <div className="approvals">
+          {pendingApprovals.map((p) => (
+            <div className="approval" key={p.id}>
+              <div className="approval-icon">
+                <Lock size={15} />
+              </div>
+              <div className="approval-body">
+                <h4>Approval needed · {money.format(p.amount)}</h4>
+                <p>
+                  {p.kind === "transfer"
+                    ? `Send ${money.format(p.amount)}${p.note ? ` for ${p.note}` : ""}`
+                    : `Invest ${money.format(p.amount)}${p.note ? ` (${p.note})` : ""}`}{" "}
+                  — over your approval limit.
+                </p>
+              </div>
+              <div className="approval-actions">
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => onResolveApproval(p.id, "approve")}
+                >
+                  Approve
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  type="button"
+                  onClick={() => onResolveApproval(p.id, "decline")}
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <form className="composer" onSubmit={onSubmit}>
         <input

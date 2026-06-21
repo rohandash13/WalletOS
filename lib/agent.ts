@@ -11,7 +11,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { tools, executeTool, hydratePolicy } from "./tools";
-import { getEventCursor, getEventsSince, getStoredPolicy } from "./redis";
+import { getEventCursor, getEventsSince, getStoredPolicy, listTxs, listPendingApprovals } from "./redis";
 import { USER_ID, type AppEvent } from "./wallet-types";
 
 const MODEL = "claude-opus-4-8";
@@ -51,9 +51,43 @@ function buildSystem(approvalThreshold?: number): string {
     `Any SINGLE transfer (send_payment) or investment (route_to_agent) over $${approvalThreshold} ` +
     `must be confirmed first: do NOT call the tool yet — tell the user exactly what you're about to ` +
     `do (amount + destination/agent) and ask them to confirm, then act ONLY after they reply yes. ` +
-    `Moves of $${approvalThreshold} or less proceed normally without asking. This applies to ad-hoc ` +
-    `requests; automations the user already set up still run on payday as configured.`
+    `Moves of $${approvalThreshold} or less proceed normally without asking. On payday, the same ` +
+    `rule applies to automations: those at or below $${approvalThreshold} run automatically, while ` +
+    `any over it are queued for the user to approve in the UI (they are NOT auto-paid).`
   );
+}
+
+/**
+ * Give the agent factual context about what's actually happened on the account
+ * (payday, automations, transfers) — these happen outside the chat, so without this
+ * the agent has no memory of them and would wrongly claim nothing was done.
+ */
+async function buildActivityContext(userId: string): Promise<string> {
+  const [txs, pending] = await Promise.all([
+    listTxs(8, userId),
+    listPendingApprovals(userId),
+  ]);
+  let ctx = "";
+  if (txs.length) {
+    const lines = txs.map((t) => {
+      const when = new Date(t.ts).toLocaleString("en-US");
+      const note = t.note ? ` — ${t.note}` : "";
+      const chain = t.txHash ? " [settled on-chain]" : "";
+      return `- ${t.type}: $${t.amount}${note}${chain} (${when})`;
+    });
+    ctx +=
+      `\n\nRECENT ACCOUNT ACTIVITY (newest first; this really happened — use it to answer "what did you do / why"):\n` +
+      lines.join("\n");
+  }
+  if (pending.length) {
+    const lines = pending.map(
+      (p) => `- ${p.kind} $${p.amount}${p.to ? ` to ${p.to}` : ""}${p.note ? ` (${p.note})` : ""}`,
+    );
+    ctx +=
+      `\n\nAWAITING THE USER'S APPROVAL (deferred because they exceeded the approval threshold; the user approves these in the UI):\n` +
+      lines.join("\n");
+  }
+  return ctx;
 }
 
 export interface AgentToolCall {
@@ -85,7 +119,7 @@ export async function runAgent(
   const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 
   const policy = await getStoredPolicy(userId);
-  const system = buildSystem(policy?.approvalThreshold);
+  const system = buildSystem(policy?.approvalThreshold) + (await buildActivityContext(userId));
 
   const history = histories.get(userId) ?? [];
   history.push({ role: "user", content: userText });

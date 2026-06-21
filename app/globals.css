@@ -1091,3 +1091,54 @@ a {
   margin-top: 14px;
   justify-content: center;
 }
+
+/* --- pending approvals (above the composer) --- */
+.approvals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.approval {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--warn-soft);
+  border: 1px solid #e6d6a8;
+  border-radius: var(--radius-sm);
+}
+.approval-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--warn);
+  flex-shrink: 0;
+}
+.approval-body {
+  flex: 1;
+  min-width: 0;
+}
+.approval-body h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.approval-body p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.approval-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}

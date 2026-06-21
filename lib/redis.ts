@@ -141,6 +141,7 @@ const k = {
   eventsSeq: (u: string = USER_ID) => `events:seq:${u}`,
   policy: (u: string = USER_ID) => `policy:${u}`,
   automations: (u: string = USER_ID) => `automations:${u}`,
+  pending: (u: string = USER_ID) => `pending:${u}`,
   agents: () => `agents:dynamic`,
 };
 
@@ -277,6 +278,45 @@ export async function listAutomations(
   return raw.map((r) => JSON.parse(r) as Automation);
 }
 
+/* ------------------------- pending approvals ------------------------------ */
+
+/** A money move deferred on payday because it exceeded the approval threshold. */
+export interface PendingApproval {
+  id: string;
+  kind: "transfer" | "invest";
+  amount: number;
+  to?: string;
+  agentId?: string;
+  riskScore?: number;
+  note?: string;
+  createdAt: number;
+}
+
+export async function listPendingApprovals(userId: string = USER_ID): Promise<PendingApproval[]> {
+  const raw = await kv.get(k.pending(userId));
+  return raw ? (JSON.parse(raw) as PendingApproval[]) : [];
+}
+
+export async function addPendingApproval(
+  p: PendingApproval,
+  userId: string = USER_ID,
+): Promise<void> {
+  const list = await listPendingApprovals(userId);
+  list.push(p);
+  await kv.set(k.pending(userId), JSON.stringify(list));
+}
+
+/** Remove and return a pending approval by id (e.g. once approved or declined). */
+export async function removePendingApproval(
+  id: string,
+  userId: string = USER_ID,
+): Promise<PendingApproval | undefined> {
+  const list = await listPendingApprovals(userId);
+  const found = list.find((p) => p.id === id);
+  await kv.set(k.pending(userId), JSON.stringify(list.filter((p) => p.id !== id)));
+  return found;
+}
+
 /**
  * Reset the demo ledger to mirror the actual CDP wallet's on-chain balance,
  * expressed in USD-equivalent using the configured testnet scale (1 USDC = $1,000).
@@ -292,6 +332,7 @@ export async function syncLedgerToOnChainBalance(
   await kv.del(k.eventsSeq(userId));
   await kv.del(k.automations(userId));
   await kv.del(k.policy(userId));
+  await kv.del(k.pending(userId));
 
   const amount = toDemoUsd(usdcBalance);
   if (amount > 0) await setBucket("available", amount, userId);
@@ -341,6 +382,7 @@ export async function seedDemoPaycheck(
     await kv.del(k.eventsSeq(userId));
     await kv.del(k.automations(userId));
     await kv.del(k.policy(userId));
+    await kv.del(k.pending(userId));
   }
   await adjustBucket("available", amount, userId);
   const portfolio = await getPortfolio(userId);

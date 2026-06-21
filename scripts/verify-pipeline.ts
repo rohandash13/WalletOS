@@ -41,9 +41,15 @@ function eq(label: string, actual: number, expected: number) {
 }
 
 async function main() {
-  const { setBucket, getPortfolio, adjustBucket, moveBetweenBuckets } = await import(
-    "../lib/redis"
-  );
+  const {
+    setBucket,
+    getPortfolio,
+    adjustBucket,
+    moveBetweenBuckets,
+    addPendingApproval,
+    listPendingApprovals,
+    removePendingApproval,
+  } = await import("../lib/redis");
   const { executeTool } = await import("../lib/tools");
   const { selectAgent, resolveAgent } = await import("../lib/marketplace");
   const { toChainUsdc, toDemoUsd } = await import("../lib/money");
@@ -145,6 +151,19 @@ async function main() {
   eq2("raw id still resolves", (await resolveAgent("savings"))?.id ?? "?", "savings");
   eq2("'Savings Agent' (UI label) -> savings", (await resolveAgent("Savings Agent"))?.id ?? "?", "savings");
   eq2("'balanced growth agent' -> balanced_growth", (await resolveAgent("balanced growth agent"))?.id ?? "?", "balanced_growth");
+
+  console.log("\n[approvals] pending-approval store add/list/remove");
+  await addPendingApproval({
+    id: "appr_test",
+    kind: "transfer",
+    amount: 30,
+    to: "0xabc",
+    note: "phone bill",
+    createdAt: Date.now(),
+  });
+  eq("one pending after add", (await listPendingApprovals()).length, 1);
+  eq2("removed returns the item", (await removePendingApproval("appr_test"))?.id ?? "?", "appr_test");
+  eq("none pending after remove", (await listPendingApprovals()).length, 0);
 
   /* -------------------------------------------------------------- summary --- */
   console.log(

@@ -2,7 +2,9 @@ import { getWallet } from "./wallet";
 import {
   addTx,
   addAutomation,
+  addPendingApproval,
   getPortfolio,
+  getStoredPolicy,
   listAutomations,
   moveBetweenBuckets,
   publishEvent,
@@ -93,31 +95,79 @@ async function runAutoSave(a: Automation, grossPay: number, userId: string): Pro
   return `Auto-saved ${amount} to Savings`;
 }
 
-async function runRecurringTransfer(a: Automation, grossPay: number, userId: string): Promise<string> {
+async function deferForApproval(
+  kind: "transfer" | "invest",
+  fields: { amount: number; to?: string; riskScore?: number; note?: string },
+  threshold: number,
+  userId: string,
+): Promise<string> {
+  await addPendingApproval(
+    {
+      id: genId("appr"),
+      kind,
+      amount: fields.amount,
+      to: fields.to,
+      riskScore: fields.riskScore,
+      note: fields.note,
+      createdAt: Date.now(),
+    },
+    userId,
+  );
+  const label = fields.note ? `${fields.note} ` : "";
+  await publishEvent(
+    "message",
+    `Approval needed: ${label}$${fields.amount} is over your $${threshold} limit — approve it to ${kind === "transfer" ? "send" : "invest"}.`,
+    undefined,
+    userId,
+  );
+  return `Pending your approval: $${fields.amount}${fields.to ? ` to ${fields.to}` : ""}`;
+}
+
+async function runRecurringTransfer(
+  a: Automation,
+  grossPay: number,
+  userId: string,
+  threshold: number,
+): Promise<string> {
   const amount = automationAmount(a, grossPay);
   if (!amount || !a.to) return "Skipped incomplete transfer rule";
-  const result = await executeTool(
-    "send_payment",
-    { to: a.to, amount, note: a.note ?? "Payday automation" },
-    { userId },
-  );
+  const note = a.note ?? "Payday automation";
+  if (amount > threshold) {
+    return deferForApproval("transfer", { amount, to: a.to, note }, threshold, userId);
+  }
+  const result = await executeTool("send_payment", { to: a.to, amount, note }, { userId });
   if (!result.ok) return `Transfer failed: ${JSON.stringify(result.result)}`;
   return `Sent ${amount} to ${a.to}`;
 }
 
-async function runRecurringInvest(a: Automation, grossPay: number, userId: string): Promise<string> {
+async function runRecurringInvest(
+  a: Automation,
+  grossPay: number,
+  userId: string,
+  threshold: number,
+): Promise<string> {
   const amount = automationAmount(a, grossPay);
   if (!amount) return "Skipped incomplete invest rule";
+  if (amount > threshold) {
+    return deferForApproval("invest", { amount, riskScore: 3, note: a.note ?? "Invest leftover" }, threshold, userId);
+  }
   const result = await executeTool("route_to_agent", { amount, riskScore: 3 }, { userId });
   if (!result.ok) return `Invest failed: ${JSON.stringify(result.result)}`;
   return `Invested ${amount}`;
 }
 
-async function executeAutomation(a: Automation, grossPay: number, userId: string): Promise<string> {
+async function executeAutomation(
+  a: Automation,
+  grossPay: number,
+  userId: string,
+  threshold: number,
+): Promise<string> {
+  // Internal reallocations (protect, auto-save) are safe and always run; only
+  // outflows/at-risk moves (transfer, invest) over the threshold need approval.
   if (a.type === "protect_bucket") return runProtectBucket(a, grossPay, userId);
-  if (a.type === "recurring_transfer") return runRecurringTransfer(a, grossPay, userId);
+  if (a.type === "recurring_transfer") return runRecurringTransfer(a, grossPay, userId, threshold);
   if (a.category === "auto_save") return runAutoSave(a, grossPay, userId);
-  if (a.category === "recurring_invest") return runRecurringInvest(a, grossPay, userId);
+  if (a.category === "recurring_invest") return runRecurringInvest(a, grossPay, userId, threshold);
   return `Recorded rule not executable on payday: ${a.category ?? a.type}`;
 }
 
@@ -181,6 +231,9 @@ export async function processPayday({
     scale: scaleLabel(),
   }, userId);
 
+  const policy = await getStoredPolicy(userId);
+  const threshold = policy?.approvalThreshold ?? Number.POSITIVE_INFINITY;
+
   const automations = (await listAutomations(50, userId)).filter((a) => a.active);
   const ordered = [
     ...automations.filter((a) => a.type === "protect_bucket"),
@@ -198,7 +251,7 @@ export async function processPayday({
 
   const automationResults: string[] = [];
   for (const automation of ordered) {
-    automationResults.push(await executeAutomation(automation, amount, userId));
+    automationResults.push(await executeAutomation(automation, amount, userId, threshold));
   }
 
   await publishEvent("message", `Payday processed. ${automationResults.join(" ")}`.trim(), {
