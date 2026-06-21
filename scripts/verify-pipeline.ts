@@ -45,7 +45,7 @@ async function main() {
     "../lib/redis"
   );
   const { executeTool } = await import("../lib/tools");
-  const { selectAgent } = await import("../lib/marketplace");
+  const { selectAgent, resolveAgent } = await import("../lib/marketplace");
   const { toChainUsdc, toDemoUsd } = await import("../lib/money");
 
   /* ---------------------------------------------------------------- scale -- */
@@ -137,6 +137,12 @@ async function main() {
   eq2("risk 9 + $999 steps down -> growth", pick(9, 999), "growth");
   eq2("risk 9 + $400 steps down -> balanced_growth", pick(9, 400), "balanced_growth");
   eq2("risk 10 + $50 steps down -> balanced_growth", pick(10, 50), "balanced_growth");
+
+  console.log("\n[agents] resolve by display name (not just id)");
+  eq2("'Stable-Invest' -> stable_invest", (await resolveAgent("Stable-Invest"))?.id ?? "?", "stable_invest");
+  eq2("'balanced growth' -> balanced_growth", (await resolveAgent("balanced growth"))?.id ?? "?", "balanced_growth");
+  eq2("'High-Yield' -> high_yield", (await resolveAgent("High-Yield"))?.id ?? "?", "high_yield");
+  eq2("raw id still resolves", (await resolveAgent("savings"))?.id ?? "?", "savings");
 
   /* -------------------------------------------------------------- summary --- */
   console.log(

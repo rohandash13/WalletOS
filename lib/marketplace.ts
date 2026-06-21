@@ -141,12 +141,31 @@ export async function allAgents(): Promise<MarketplaceAgent[]> {
   return [...AGENTS, ...dynamic];
 }
 
-export function getAgent(id: string): MarketplaceAgent | undefined {
-  return AGENTS.find((a) => a.id === id);
+/** Normalize an id/name for fuzzy matching: lowercase, alphanumerics only. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-export async function resolveAgent(id: string): Promise<MarketplaceAgent | undefined> {
-  return (await allAgents()).find((a) => a.id === id);
+export function getAgent(idOrName: string): MarketplaceAgent | undefined {
+  const target = norm(idOrName);
+  return (
+    AGENTS.find((a) => a.id === idOrName) ??
+    AGENTS.find((a) => norm(a.id) === target || norm(a.title) === target)
+  );
+}
+
+/**
+ * Resolve an agent by its internal id OR its display name (case/spacing-insensitive),
+ * across built-ins and user-created agents — so "Home Fund Keeper", "home fund keeper",
+ * and the raw id all resolve to the same agent.
+ */
+export async function resolveAgent(idOrName: string): Promise<MarketplaceAgent | undefined> {
+  const target = norm(idOrName);
+  const agents = await allAgents();
+  return (
+    agents.find((a) => a.id === idOrName) ??
+    agents.find((a) => norm(a.id) === target || norm(a.title) === target)
+  );
 }
 
 /**

@@ -135,7 +135,7 @@ export const tools: Anthropic.Tool[] = [
         agent: {
           type: "string",
           description:
-            "Optional explicit agent id (e.g. savings, stable_invest, balanced_growth, growth, high_yield, or a user-created agent id). Omit to auto-select by risk + amount.",
+            "Optional explicit agent — either an id (e.g. savings, stable_invest, balanced_growth, growth, high_yield) OR the agent's display name (e.g. 'Stable-Invest', 'Home Fund Keeper', or any user-created agent's name). Pass this whenever the user names a specific agent. Omit ONLY to auto-select by risk + amount.",
         },
         amount: { type: "number", description: "USDC to route" },
         riskScore: { type: "number", description: "User risk score 1-10" },
