@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -81,6 +82,81 @@ const money = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 0,
 });
+
+/** Inline markdown → React: **bold**, *italic*, `code`. Safe (no raw HTML). */
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const regex = /\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[1] != null) nodes.push(<strong key={`${keyPrefix}-b${i}`}>{m[1]}</strong>);
+    else if (m[2] != null) nodes.push(<em key={`${keyPrefix}-i${i}`}>{m[2]}</em>);
+    else if (m[3] != null) nodes.push(<code key={`${keyPrefix}-c${i}`}>{m[3]}</code>);
+    last = m.index + m[0].length;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+/**
+ * Render the assistant's reply as light markdown: paragraphs, bullet/numbered
+ * lists, and inline bold/italic/code — so "**bold**" and "- item" look polished
+ * instead of showing raw asterisks.
+ */
+function FormattedMessage({ text }: { text: string }) {
+  const blocks: ReactNode[] = [];
+  let para: string[] = [];
+  let items: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const key = `p${blocks.length}`;
+    blocks.push(<p key={key}>{renderInline(para.join(" "), key)}</p>);
+    para = [];
+  };
+  const flushList = () => {
+    if (!items.length) return;
+    const key = `l${blocks.length}`;
+    const lis = items.map((it, i) => <li key={`${key}-${i}`}>{renderInline(it, `${key}-${i}`)}</li>);
+    blocks.push(listType === "ol" ? <ol key={key}>{lis}</ol> : <ul key={key}>{lis}</ul>);
+    items = [];
+    listType = null;
+  };
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    const bullet = line.match(/^[-*•]\s+(.*)$/);
+    const numbered = line.match(/^\d+[.)]\s+(.*)$/);
+    if (bullet) {
+      flushPara();
+      if (listType === "ol") flushList();
+      listType = "ul";
+      items.push(bullet[1]);
+    } else if (numbered) {
+      flushPara();
+      if (listType === "ul") flushList();
+      listType = "ol";
+      items.push(numbered[1]);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+
+  return <div className="md">{blocks}</div>;
+}
 
 /** Display an agent's name with an explicit "Agent" suffix (no double "Agent"). */
 function agentName(title: string): string {
@@ -565,7 +641,9 @@ function ChatPanel({
             <div className="msg-avatar">
               {m.role === "assistant" ? <Sparkles size={14} /> : <User size={14} />}
             </div>
-            <div className="bubble">{m.text}</div>
+            <div className="bubble">
+              {m.role === "assistant" ? <FormattedMessage text={m.text} /> : m.text}
+            </div>
           </div>
         ))}
 
