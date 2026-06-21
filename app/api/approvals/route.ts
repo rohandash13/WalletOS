@@ -13,6 +13,13 @@ import {
 import { executeTool, hydratePolicy } from "@/lib/tools";
 import { requireAuth } from "@/lib/auth";
 
+function errText(result: unknown): string {
+  if (result && typeof result === "object" && "error" in result) {
+    return String((result as { error: unknown }).error);
+  }
+  return "could not complete the request";
+}
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -37,12 +44,14 @@ export async function POST(req: NextRequest) {
     const action = body?.action === "decline" ? "decline" : "approve";
     if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
-    const pending = await removePendingApproval(id, session.userId);
+    // Read (don't remove yet) so a failed execution keeps the item for retry.
+    const pending = (await listPendingApprovals(session.userId)).find((p) => p.id === id);
     if (!pending) {
       return NextResponse.json({ error: "Approval not found (already handled?)" }, { status: 404 });
     }
 
     if (action === "decline") {
+      await removePendingApproval(id, session.userId);
       await publishEvent(
         "message",
         `Declined: ${pending.note ?? pending.kind} ($${pending.amount}) was not sent.`,
@@ -52,7 +61,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, declined: pending });
     }
 
-    // Approved → execute now (apply any stored policy first).
+    // Approved → execute first (apply any stored policy), remove ONLY on success.
     await hydratePolicy(session.userId);
     const outcome =
       pending.kind === "transfer"
@@ -68,8 +77,18 @@ export async function POST(req: NextRequest) {
           );
 
     if (!outcome.ok) {
-      return NextResponse.json({ error: outcome.result }, { status: 400 });
+      // Keep the pending item so the user can retry; surface why it failed.
+      const why = errText(outcome.result);
+      await publishEvent(
+        "message",
+        `Couldn't ${pending.kind === "transfer" ? "send" : "invest"} $${pending.amount}: ${why}`,
+        undefined,
+        session.userId,
+      );
+      return NextResponse.json({ error: why, pending }, { status: 400 });
     }
+
+    await removePendingApproval(id, session.userId);
     return NextResponse.json({ ok: true, approved: pending, result: outcome.result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -280,6 +280,18 @@ export async function listAutomations(
   return raw.map((r) => JSON.parse(r) as Automation);
 }
 
+/** Overwrite the whole automations list (used to dedupe same-target rules). */
+export async function setAutomations(
+  list: Automation[],
+  userId: string = USER_ID,
+): Promise<void> {
+  await kv.del(k.automations(userId));
+  // lpush in reverse so reading newest-first yields the given order.
+  for (const a of [...list].reverse()) {
+    await kv.lpush(k.automations(userId), JSON.stringify(a));
+  }
+}
+
 /* ------------------------- pending approvals ------------------------------ */
 
 /** A money move deferred on payday because it exceeded the approval threshold. */

@@ -21,6 +21,8 @@ import {
   setStoredPolicy,
   getStoredPolicy,
   addAutomation,
+  listAutomations,
+  setAutomations,
 } from "./redis";
 import {
   USER_ID,
@@ -391,7 +393,21 @@ async function handleCreateAutomation(input: Record<string, unknown>, userId: st
     active: true,
     createdAt: Date.now(),
   };
-  await addAutomation(automation, userId);
+  // Replace an existing rule that targets the same thing, so re-stating a plan
+  // ("invest the rest", "keep rent safe") updates it instead of stacking duplicates
+  // that all fire on payday.
+  const targetsSame = (a: Automation): boolean => {
+    if (type === "protect_bucket") return a.type === "protect_bucket" && a.bucket === automation.bucket;
+    if (type === "recurring_transfer") return a.type === "recurring_transfer" && a.to === automation.to;
+    return automation.category != null && a.category === automation.category;
+  };
+  const existing = await listAutomations(50, userId);
+  const conflicts = existing.filter(targetsSame);
+  if (conflicts.length > 0) {
+    await setAutomations([automation, ...existing.filter((a) => !targetsSame(a))], userId);
+  } else {
+    await addAutomation(automation, userId);
+  }
 
   const isPaydayRule = automation.schedule?.toLowerCase() === "payday";
 

@@ -82,7 +82,7 @@ type PendingApproval = {
 };
 
 const PRIMARY_PROMPT =
-  "I get paid $2k on the 1st. Send my sister $50 every month, keep rent safe, and invest the rest low-risk - I'm a 3 out of 10 on risk.";
+  "I get paid $2k on the 1st. Send my sister $50 every month, keep rent safe, and invest the rest low-risk.";
 const RECOVERY_PROMPT = "Actually, I need $200 back.";
 
 const WELCOME =
