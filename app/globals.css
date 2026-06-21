@@ -957,3 +957,65 @@ a {
   margin: 14px 0;
   flex-shrink: 0;
 }
+
+/* --- risk-score onboarding picker --- */
+.risk-picker {
+  margin: 6px 0 4px 40px;
+  padding: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.risk-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--green-deep);
+  font-weight: 600;
+  font-size: 14px;
+}
+.risk-picker-sub {
+  margin: 6px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.risk-scale {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 6px;
+}
+.risk-num {
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.06s ease;
+}
+.risk-num:hover:not(:disabled) {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.risk-num:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.risk-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

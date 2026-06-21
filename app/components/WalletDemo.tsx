@@ -129,7 +129,6 @@ function formatDate(value: string) {
 
 export function WalletDemo({
   authUser,
-  profile,
 }: {
   authUser: AuthUser;
   profile: WalletOSProfile;
@@ -145,7 +144,8 @@ export function WalletDemo({
   const [agents, setAgents] = useState<MarketAgent[]>([]);
   const [investments, setInvestments] = useState<AgentInvestment[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
-  const [riskScore, setRiskScore] = useState<number | null>(profile.riskScore);
+  // Undecided until the user picks a risk score in the chat onboarding.
+  const [riskScore, setRiskScore] = useState<number | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isPaydayRunning, setIsPaydayRunning] = useState(false);
@@ -315,7 +315,7 @@ export function WalletDemo({
       if (body.buckets) setBuckets(body.buckets);
       setEvents(body.events ?? events);
       setAutomations(body.automations ?? automations);
-      setRiskScore(body.riskScore ?? riskScore);
+      setRiskScore((prev) => body.riskScore ?? prev);
       setWhy(body.why ?? why);
     } catch {
       setMessages((c) => [
@@ -330,6 +330,15 @@ export function WalletDemo({
       setIsSending(false);
       void refreshLiveData();
     }
+  }
+
+  function chooseRisk(n: number) {
+    if (isSending) return;
+    setRiskScore(n);
+    // Ask the agent to SUGGEST matching agents (no money moved) for this score.
+    void submitMessage(
+      `I'm a ${n} out of 10 on risk. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
+    );
   }
 
   async function resetDemo() {
@@ -467,6 +476,8 @@ export function WalletDemo({
               isSending={isSending}
               messages={messages}
               actions={actions}
+              riskScore={riskScore}
+              onChooseRisk={chooseRisk}
               onInputChange={setInput}
               onSubmit={(e) => {
                 e.preventDefault();
@@ -522,6 +533,8 @@ function ChatPanel({
   isSending,
   messages,
   actions,
+  riskScore,
+  onChooseRisk,
   onInputChange,
   onSubmit,
   onDemo,
@@ -531,11 +544,14 @@ function ChatPanel({
   isSending: boolean;
   messages: Message[];
   actions: Action[];
+  riskScore: number | null;
+  onChooseRisk: (n: number) => void;
   onInputChange: (v: string) => void;
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onDemo: () => void;
   onRecovery: () => void;
 }) {
+  const needsRisk = riskScore == null;
   const stackRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     stackRef.current?.scrollTo({ top: stackRef.current.scrollHeight, behavior: "smooth" });
@@ -552,6 +568,8 @@ function ChatPanel({
             <div className="bubble">{m.text}</div>
           </div>
         ))}
+
+        {needsRisk && <RiskPicker disabled={isSending} onChoose={onChooseRisk} />}
 
         {actions.length > 0 && (
           <div className="actions">
@@ -595,13 +613,54 @@ function ChatPanel({
         </button>
       </form>
 
-      <div className="suggestions">
-        <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
-          ▶ Try an example: payday plan
-        </button>
-        <button className="chip" type="button" onClick={onRecovery} disabled={isSending}>
-          I need $200 back
-        </button>
+      {!needsRisk && (
+        <div className="suggestions">
+          <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
+            ▶ Try an example: payday plan
+          </button>
+          <button className="chip" type="button" onClick={onRecovery} disabled={isSending}>
+            I need $200 back
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** First-run onboarding: pick a risk score 1–10 before anything else. */
+function RiskPicker({
+  disabled,
+  onChoose,
+}: {
+  disabled: boolean;
+  onChoose: (n: number) => void;
+}) {
+  return (
+    <div className="risk-picker">
+      <div className="risk-picker-head">
+        <Sparkles size={14} />
+        <span>First, how do you feel about risk?</span>
+      </div>
+      <p className="risk-picker-sub">
+        Pick where you sit on the scale — <strong>1</strong> means play it very safe,{" "}
+        <strong>10</strong> means go for maximum growth. I&apos;ll suggest agents that fit you.
+      </p>
+      <div className="risk-scale">
+        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            className="risk-num"
+            disabled={disabled}
+            onClick={() => onChoose(n)}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+      <div className="risk-scale-labels">
+        <span>Safer</span>
+        <span>Riskier</span>
       </div>
     </div>
   );
