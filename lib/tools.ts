@@ -27,7 +27,7 @@ import {
   type TxRecord,
   type Automation,
 } from "./wallet-types";
-import { selectAgent, routeViaAgent } from "./marketplace";
+import { selectAgent, resolveAgent, routeViaAgent } from "./marketplace";
 
 const USDC = "usdc" as const;
 
@@ -115,14 +115,21 @@ export const tools: Anthropic.Tool[] = [
   {
     name: "create_automation",
     description:
-      "Create a recurring rule. 'recurring_transfer' sends an amount to an address on a schedule (e.g. monthly). 'protect_bucket' reserves an amount into a protected bucket (e.g. keep rent safe).",
+      "Create a recurring money rule. 'recurring_transfer' sends an amount to an address on a schedule (e.g. monthly bill or money to family). 'protect_bucket' reserves an amount into a protected bucket (e.g. keep rent safe). 'rule' records any other everyday automation (auto-save from paycheck, invest on a schedule, round-up savings, smart credit-card payment, split paycheck, low-balance alert, subscription watch) — set category accordingly.",
     input_schema: {
       type: "object",
       properties: {
-        type: { type: "string", enum: ["recurring_transfer", "protect_bucket"] },
+        type: { type: "string", enum: ["recurring_transfer", "protect_bucket", "rule"] },
+        category: {
+          type: "string",
+          description:
+            "Friendly template: bill, family, auto_save, recurring_invest, roundup, smart_card, paycheck_split, low_balance_alert, subscription_watch.",
+        },
         amount: { type: "number" },
+        percent: { type: "number", description: "For % rules, e.g. save 20% of each paycheck" },
+        threshold: { type: "number", description: "For alerts / smart payments (balance threshold)" },
         to: { type: "string", description: "Recipient address (recurring_transfer)" },
-        schedule: { type: "string", description: "e.g. 'monthly' or 'monthly:1'" },
+        schedule: { type: "string", description: "e.g. 'monthly', 'weekly', or 'monthly:1'" },
         bucket: { type: "string", enum: BUCKETS, description: "Target bucket (protect_bucket)" },
         note: { type: "string" },
       },
@@ -132,14 +139,14 @@ export const tools: Anthropic.Tool[] = [
   {
     name: "route_to_agent",
     description:
-      "Route funds to a specialized Fetch AI marketplace agent based on the user's risk score (1=conservative .. 10=aggressive). The agent is auto-selected by risk (low risk → Savings, moderate → Stable-Invest) unless you name one. This calls the live uAgent for its strategy and makes a real on-chain agent-to-agent USDC transfer. Use for 'invest the rest'.",
+      "Route funds to a specialized Fetch AI marketplace agent based on the user's risk score (1=conservative .. 10=aggressive). The agent is auto-selected by risk AND amount: low risk → Savings/Stable-Invest, mid → Balanced-Growth, high risk with enough funds → Growth (min $500) or High-Yield (min $1000). Omit the agent field to auto-select. This calls the live uAgent for its strategy and makes a real on-chain agent-to-agent USDC transfer. Use for 'invest the rest'.",
     input_schema: {
       type: "object",
       properties: {
         agent: {
           type: "string",
-          enum: ["stable_invest", "savings", "bill_pay"],
-          description: "Optional explicit agent; omit to auto-select by risk",
+          description:
+            "Optional explicit agent id (e.g. savings, stable_invest, balanced_growth, growth, high_yield, or a user-created agent id). Omit to auto-select by risk + amount.",
         },
         amount: { type: "number", description: "USDC to route" },
         riskScore: { type: "number", description: "User risk score 1-10" },
@@ -329,11 +336,19 @@ async function handleSetPolicy(input: Record<string, unknown>) {
 }
 
 async function handleCreateAutomation(input: Record<string, unknown>) {
-  const type = input.type === "protect_bucket" ? "protect_bucket" : "recurring_transfer";
+  const type: Automation["type"] =
+    input.type === "protect_bucket"
+      ? "protect_bucket"
+      : input.type === "recurring_transfer"
+        ? "recurring_transfer"
+        : "rule";
   const automation: Automation = {
     id: genId("auto"),
     type,
+    category: input.category ? String(input.category) : undefined,
     amount: input.amount != null ? Number(input.amount) : undefined,
+    percent: input.percent != null ? Number(input.percent) : undefined,
+    threshold: input.threshold != null ? Number(input.threshold) : undefined,
     to: input.to ? String(input.to) : undefined,
     schedule: input.schedule ? String(input.schedule) : undefined,
     bucket: isBucket(input.bucket) ? input.bucket : undefined,
@@ -353,14 +368,39 @@ async function handleCreateAutomation(input: Record<string, unknown>) {
     );
   }
 
-  await publishEvent(
-    "automation",
-    automation.type === "recurring_transfer"
-      ? `Automation: send ${automation.amount} USDC ${automation.schedule ?? ""}`.trim()
-      : `Automation: protect ${automation.amount} USDC in ${automation.bucket}`,
-    automation,
-  );
+  await publishEvent("automation", `Automation set up: ${automationLabel(automation)}`, automation);
   return automation;
+}
+
+/** A short, plain-English label for an automation (shared with the UI mapping). */
+export function automationLabel(a: Automation): string {
+  const amt = a.amount != null ? `$${a.amount}` : a.percent != null ? `${a.percent}%` : "";
+  const when = a.schedule ? ` ${a.schedule}` : "";
+  switch (a.category) {
+    case "bill":
+      return `Pay bill ${amt}${when}`.trim();
+    case "family":
+      return `Send family ${amt}${when}`.trim();
+    case "auto_save":
+      return `Auto-save ${amt} each paycheck`.trim();
+    case "recurring_invest":
+      return `Invest ${amt}${when}`.trim();
+    case "roundup":
+      return "Round-up savings on purchases";
+    case "smart_card":
+      return `Pay card in full${a.threshold ? ` unless below $${a.threshold}` : ""}`;
+    case "paycheck_split":
+      return "Split paycheck into accounts";
+    case "low_balance_alert":
+      return `Low-balance alert${a.threshold ? ` below $${a.threshold}` : ""}`;
+    case "subscription_watch":
+      return "Watch for unused subscriptions";
+    default:
+      if (a.type === "recurring_transfer") return `Send ${amt}${when}`.trim();
+      if (a.type === "protect_bucket")
+        return `Protect ${amt}${a.bucket ? ` in ${BUCKET_LABELS[a.bucket]}` : ""}`.trim();
+      return a.note || "Automation";
+  }
 }
 
 async function handleRouteToAgent(input: Record<string, unknown>) {
@@ -368,15 +408,15 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
   const riskScore = Number(input.riskScore);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error(`Invalid amount: ${amount}`);
 
-  const agent = selectAgent(
-    Number.isFinite(riskScore) ? riskScore : 5,
-    input.agent ? String(input.agent) : undefined,
-  );
-
   const portfolio = await getPortfolio();
   if (portfolio.available < amount) {
     throw new Error(`Insufficient Available balance: ${portfolio.available} < ${amount}`);
   }
+
+  const preferred = input.agent ? String(input.agent) : undefined;
+  const agent =
+    (preferred ? await resolveAgent(preferred) : undefined) ??
+    selectAgent(Number.isFinite(riskScore) ? riskScore : 5, amount, preferred);
 
   // 1. Ask the Fetch uAgent for its allocation/decision (local fallback if down).
   const plan = await routeViaAgent(agent, amount, riskScore);

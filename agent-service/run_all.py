@@ -11,7 +11,14 @@ import subprocess
 import sys
 import time
 
-AGENTS = ["stable_invest_agent.py", "savings_agent.py", "bill_pay_agent.py"]
+AGENTS = [
+    "stable_invest_agent.py",
+    "savings_agent.py",
+    "bill_pay_agent.py",
+    "balanced_growth_agent.py",
+    "growth_agent.py",
+    "high_yield_agent.py",
+]
 
 
 def main() -> None:

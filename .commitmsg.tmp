@@ -1,0 +1,30 @@
+Plain-language content, richer automations, left-sidebar full-height layout
+
+Product breadth + financial literacy focus — written for everyone, no crypto
+jargon.
+
+Layout
+- Move Chat / Automations / Agents into a left sidebar; brand, Testnet pill,
+  and Reset live there too.
+- Fixed full-height app: no whole-page scroll; only the chat thread and live
+  activity scroll. Three aligned columns (nav · main · portfolio+activity)
+  that fill the screen.
+
+Plain language (no blockchain buzzwords)
+- Agent roster + strategies + explanations rewritten in everyday terms; plain
+  allocation buckets (safe_savings / steady_growth / higher_growth / cash_reserve)
+  in both lib/marketplace.ts and agent-service/strategies.py.
+- Dynamic agent generator (lib/agent-factory) now produces jargon-free,
+  goal-oriented strategies; relatable create placeholder.
+- Agent box percentage relabeled "≈X%/yr" (estimated yearly growth) with tooltip.
+
+Automations breadth
+- Manual create form now offers everyday templates: pay a bill, send to family,
+  auto-save from paycheck, set aside/protect, invest on a schedule, round-up
+  savings, smart credit-card payment, split paycheck, low-balance alert, watch
+  subscriptions. Backend gains a generic "rule" automation type + category +
+  percent/threshold fields and friendly labels (automationLabel).
+
+Verified: build + lint green.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

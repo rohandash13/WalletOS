@@ -17,7 +17,6 @@ import type {
   Automation as LedgerAutomation,
   EventType,
 } from "./wallet-types";
-import { BUCKET_LABELS } from "./wallet-types";
 import type {
   Portfolio as UiPortfolio,
   Bucket,
@@ -29,7 +28,7 @@ import type {
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
 import { getPortfolio, getEventsSince, listAutomations } from "./redis";
-import { getBalanceSnapshot } from "./tools";
+import { getBalanceSnapshot, automationLabel } from "./tools";
 
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
 
@@ -54,11 +53,12 @@ export function toUiPortfolio(p: LedgerPortfolio): UiPortfolio {
 
 export function toBuckets(p: LedgerPortfolio): Bucket[] {
   const ui = toUiPortfolio(p);
+  // Three meaningful buckets only — Family Payment was always $0 (sent funds leave
+  // the wallet), so it's dropped to reduce clutter.
   return [
-    { name: "Checking", key: "checking", balance: ui.checking, protected: false },
-    { name: "Rent Safe", key: "rent_safe", balance: ui.rent_safe, protected: true },
-    { name: "Family Payment", key: "family_payment", balance: ui.family_payment, protected: false },
-    { name: "Stable-Invest", key: "stable_invest", balance: ui.stable_invest, protected: false },
+    { name: "Available", key: "checking", balance: ui.checking, protected: false },
+    { name: "Protected", key: "rent_safe", balance: ui.rent_safe, protected: true },
+    { name: "Invested", key: "stable_invest", balance: ui.stable_invest, protected: false },
   ];
 }
 
@@ -118,20 +118,12 @@ function nextRun(a: LedgerAutomation): string {
 }
 
 export function toUiAutomation(a: LedgerAutomation): UiAutomation {
-  const name =
-    a.type === "recurring_transfer"
-      ? `Send $${a.amount ?? 0} ${a.schedule ?? "monthly"}`.trim()
-      : `Protect ${a.bucket ? BUCKET_LABELS[a.bucket] : "funds"}`;
   return {
     id: a.id,
-    name,
+    name: automationLabel(a),
     status: a.active ? "active" : "paused",
     nextRunAt: nextRun(a),
-    explanation:
-      a.note ??
-      (a.type === "recurring_transfer"
-        ? `Automatically sends $${a.amount ?? 0} on schedule.`
-        : `Keeps $${a.amount ?? 0} reserved and protected first.`),
+    explanation: a.note ?? "Runs automatically on schedule.",
   };
 }
 
@@ -222,6 +214,7 @@ export async function toChatResponse(turn: AgentTurn): Promise<ChatResponse> {
     assistantMessage: turn.reply,
     actions: toActions(turn.toolCalls),
     portfolio: toUiPortfolio(portfolio),
+    buckets: toBuckets(portfolio),
     events: toWalletEvents(events),
     automations: autos.map(toUiAutomation),
     riskScore: extractRisk(turn.toolCalls),

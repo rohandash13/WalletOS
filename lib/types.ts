@@ -59,6 +59,7 @@ export type ChatResponse = {
   assistantMessage: string;
   actions: Action[];
   portfolio: Portfolio;
+  buckets?: Bucket[];
   events: WalletEvent[];
   automations?: Automation[];
   riskScore?: number;
