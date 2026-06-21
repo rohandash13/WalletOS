@@ -284,18 +284,25 @@ async function handleSendPayment(input: Record<string, unknown>, userId: string)
     );
   }
 
-  // Real on-chain settlement only, scaled for the demo economy. User-facing
-  // amounts stay in relatable dollars; Base Sepolia moves the scaled test USDC.
+  // Best-effort on-chain settlement (scaled for the demo economy). If the chain
+  // can't settle (no gas, faucet limit, scarce test USDC) the logical bucket move
+  // still happens so the app stays functional; a real tx hash is recorded only when
+  // settlement actually succeeds.
   const chainAmount = toChainUsdc(amount);
-  const onChainUsdc = await wallet.getUsdcBalance();
-  if (onChainUsdc < chainAmount) {
-    throw new Error(
-      `Insufficient on-chain USDC: ${onChainUsdc} < ${chainAmount} (${scaleLabel()})`,
-    );
+  let txHash: string | undefined;
+  let explorerUrl: string | undefined;
+  let settledOnChain = 0;
+  try {
+    const onChainUsdc = await wallet.getUsdcBalance();
+    if (onChainUsdc >= chainAmount) {
+      const transfer = await wallet.sendUsdc(to, chainAmount);
+      txHash = transfer.transactionHash;
+      explorerUrl = transfer.explorerUrl;
+      settledOnChain = chainAmount;
+    }
+  } catch {
+    /* on-chain settlement skipped (e.g. no gas) — proceed with the ledger move */
   }
-  const transfer = await wallet.sendUsdc(to, chainAmount);
-  const txHash = transfer.transactionHash;
-  const explorerUrl = transfer.explorerUrl;
 
   const newBucket = await adjustBucket(fromBucket, -amount, userId);
 
@@ -326,7 +333,7 @@ async function handleSendPayment(input: Record<string, unknown>, userId: string)
     transactionHash: txHash,
     explorerUrl,
     amount,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
     to,
     fromBucket,
@@ -487,19 +494,27 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
   // 1. Ask the Fetch uAgent for its allocation/decision (local fallback if down).
   const plan = await routeViaAgent(agent, amount, riskScore);
 
-  // 2. Real on-chain agent-to-agent settlement to the agent's CDP wallet.
+  // 2. Best-effort on-chain agent-to-agent settlement. If it can't settle (no gas,
+  //    faucet limit, scarce test USDC), the logical investment still happens so the
+  //    app works; a real tx hash is recorded only when settlement succeeds.
   const wallet = getWallet();
-  const agentAddress = await wallet.resolveAddress(agentAccountName(agent.id));
   const chainAmount = toChainUsdc(amount);
-  const onChainUsdc = await wallet.getUsdcBalance();
-  if (onChainUsdc < chainAmount) {
-    throw new Error(
-      `Insufficient on-chain USDC: ${onChainUsdc} < ${chainAmount} (${scaleLabel()})`,
-    );
+  let agentAddress = "";
+  let txHash: string | undefined;
+  let explorerUrl: string | undefined;
+  let settledOnChain = 0;
+  try {
+    agentAddress = await wallet.resolveAddress(agentAccountName(agent.id));
+    const onChainUsdc = await wallet.getUsdcBalance();
+    if (onChainUsdc >= chainAmount) {
+      const transfer = await wallet.sendUsdc(agentAddress, chainAmount);
+      txHash = transfer.transactionHash;
+      explorerUrl = transfer.explorerUrl;
+      settledOnChain = chainAmount;
+    }
+  } catch {
+    /* on-chain settlement skipped (e.g. no gas) — proceed with the ledger move */
   }
-  const transfer = await wallet.sendUsdc(agentAddress, chainAmount);
-  const txHash = transfer.transactionHash;
-  const explorerUrl = transfer.explorerUrl;
 
   // 3. Logical ledger move available -> agent's bucket (full amount).
   await moveBetweenBuckets("available", agent.bucket, amount, userId);
@@ -527,7 +542,7 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
   await publishEvent(
     "agent",
     `Routed ${amount} USDC to ${agent.title} (risk ${riskScore}/10, ~${plan.projectedApy}% APY)${plan.live ? "" : " [offline strategy]"}`,
-    { agent: agent.id, plan, settledOnChain: chainAmount, scale: scaleLabel(), txHash, explorerUrl, agentAddress },
+    { agent: agent.id, plan, settledOnChain, scale: scaleLabel(), txHash, explorerUrl, agentAddress },
     userId,
   );
   await publishEvent("portfolio", `${BUCKET_LABELS[agent.bucket]} → ${updated[agent.bucket]} USDC`, {
@@ -545,7 +560,7 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
     projectedApy: plan.projectedApy,
     explanation: plan.explanation,
     agentAddress,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
     txHash,
     explorerUrl,

@@ -188,35 +188,46 @@ export async function processPayday({
   const userAddress = await wallet.getAddress();
   const chainAmount = toChainUsdc(amount);
 
-  const fundingTxs = autoFundPayroll ? await fundPayrollIfNeeded(chainAmount) : [];
-  const payrollBalance = await wallet.getUsdcBalanceForAccount(PAYROLL_ACCOUNT_NAME);
-  if (payrollBalance < chainAmount) {
-    throw new Error(
-      `Payroll wallet has ${payrollBalance} test USDC, needs ${chainAmount} (${scaleLabel()})`,
-    );
+  // Best-effort on-chain payroll settlement: fund payroll + transfer to the user
+  // wallet if we can. If the faucet is rate-limited or gas is missing, the paycheck
+  // still lands in the ledger so the demo keeps working; a real tx hash is recorded
+  // only when settlement succeeds.
+  const fundingTxs: string[] = [];
+  let txHash: string | undefined;
+  let explorerUrl: string | undefined;
+  let settledOnChain = 0;
+  try {
+    if (autoFundPayroll) fundingTxs.push(...(await fundPayrollIfNeeded(chainAmount)));
+    const payrollBalance = await wallet.getUsdcBalanceForAccount(PAYROLL_ACCOUNT_NAME);
+    if (payrollBalance >= chainAmount) {
+      const transfer = await wallet.sendUsdcFromAccount(PAYROLL_ACCOUNT_NAME, userAddress, chainAmount);
+      txHash = transfer.transactionHash;
+      explorerUrl = transfer.explorerUrl;
+      settledOnChain = chainAmount;
+    }
+  } catch {
+    /* on-chain payroll settlement skipped — paycheck still credits the ledger */
   }
-
-  const transfer = await wallet.sendUsdcFromAccount(PAYROLL_ACCOUNT_NAME, userAddress, chainAmount);
 
   const tx: TxRecord = {
     id: genId("payday"),
-    kind: "on_chain",
+    kind: txHash ? "on_chain" : "internal",
     type: "deposit",
     amount,
     token: USDC,
     from: PAYROLL_ACCOUNT_NAME,
     to: userAddress,
     toBucket: "available",
-    txHash: transfer.transactionHash,
-    explorerUrl: transfer.explorerUrl,
-    note: `Paycheck deposit (${scaleLabel()}; ${chainAmount} test USDC on-chain)`,
+    txHash,
+    explorerUrl,
+    note: `Paycheck deposit (${scaleLabel()}${txHash ? `; ${chainAmount} test USDC on-chain` : ""})`,
     status: "confirmed",
     ts: Date.now(),
   };
   await addTx(tx, userId);
   await publishEvent("tx", `Paycheck landed: $${amount.toLocaleString("en-US")}`, {
     ...tx,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
   }, userId);
 
@@ -227,7 +238,7 @@ export async function processPayday({
     bucket: "available",
     delta: amount,
     balance: available,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
   }, userId);
 
@@ -256,7 +267,7 @@ export async function processPayday({
 
   await publishEvent("message", `Payday processed. ${automationResults.join(" ")}`.trim(), {
     amount,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
     automationResults,
   }, userId);
@@ -264,12 +275,12 @@ export async function processPayday({
   return {
     ok: true,
     amount,
-    settledOnChain: chainAmount,
+    settledOnChain,
     scale: scaleLabel(),
     payrollAccount: PAYROLL_ACCOUNT_NAME,
     userAddress,
-    txHash: transfer.transactionHash,
-    explorerUrl: transfer.explorerUrl,
+    txHash,
+    explorerUrl,
     fundingTxs,
     automationResults,
     portfolio: await getPortfolio(userId),
