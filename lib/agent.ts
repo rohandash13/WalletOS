@@ -114,9 +114,16 @@ export function resetConversation(userId: string = USER_ID): void {
 export async function runAgent(
   userText: string,
   userId: string = USER_ID,
+  opts: { fast?: boolean } = {},
 ): Promise<AgentTurn> {
   await hydratePolicy(userId);
   const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+
+  // Lower effort for lightweight turns (e.g. the onboarding suggestion) keeps the
+  // model's reasoning short so the reply comes back fast. Adaptive thinking stays
+  // on (at low effort it thinks minimally) — safer than disabling it, which can
+  // make Opus 4.8 write longer visible reasoning.
+  const effort: "low" | "medium" = opts.fast ? "low" : "medium";
 
   const policy = await getStoredPolicy(userId);
   const system = buildSystem(policy?.approvalThreshold) + (await buildActivityContext(userId));
@@ -133,7 +140,7 @@ export async function runAgent(
       model: MODEL,
       max_tokens: 8000,
       thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
+      output_config: { effort },
       system,
       tools,
       messages: history,

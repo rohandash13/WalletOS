@@ -392,7 +392,7 @@ export function WalletDemo({
     }
   }, [tab, fetchAgents, fetchInvestments]);
 
-  async function submitMessage(text: string) {
+  async function submitMessage(text: string, opts: { fast?: boolean } = {}) {
     const msg = text.trim();
     if (!msg || isSending) return;
     setIsSending(true);
@@ -403,7 +403,12 @@ export function WalletDemo({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ userId: authUser.userId, message: msg, mode: "text" }),
+        body: JSON.stringify({
+          userId: authUser.userId,
+          message: msg,
+          mode: "text",
+          fast: opts.fast === true,
+        }),
       });
       if (!res.ok) throw new Error("chat failed");
       const body = (await res.json()) as ChatResponse;
@@ -452,8 +457,10 @@ export function WalletDemo({
       /* setting is best-effort; agent still works without it */
     }
     // Now ask the agent to SUGGEST matching agents (no money moved) for this score.
+    // fast=true → low effort, so this first reply comes back quickly.
     void submitMessage(
       `I'm a ${riskScore} out of 10 on risk, and I want to approve anything over $${threshold} before it moves. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
+      { fast: true },
     );
   }
 
