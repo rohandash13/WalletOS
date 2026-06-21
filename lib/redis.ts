@@ -241,6 +241,11 @@ export async function getEventsSince(
 export interface StoredPolicy {
   maxUsdcPerTx?: number;
   allowlist?: string[];
+  /**
+   * "Approve before moving money" threshold (demo dollars). Single money moves at
+   * or below this auto-execute; above it the agent asks the user to confirm first.
+   */
+  approvalThreshold?: number;
 }
 
 export async function getStoredPolicy(userId: string = USER_ID): Promise<StoredPolicy | null> {

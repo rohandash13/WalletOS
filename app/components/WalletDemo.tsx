@@ -222,6 +222,9 @@ export function WalletDemo({
   const [actions, setActions] = useState<Action[]>([]);
   // Undecided until the user picks a risk score in the chat onboarding.
   const [riskScore, setRiskScore] = useState<number | null>(null);
+  // Two-step onboarding: pick risk, then an approve-before-moving-money threshold.
+  const [setupStage, setSetupStage] = useState<"risk" | "approval" | "done">("risk");
+  const [approvalThreshold, setApprovalThreshold] = useState<number | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isPaydayRunning, setIsPaydayRunning] = useState(false);
@@ -344,6 +347,8 @@ export function WalletDemo({
             setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
             setActions([]);
             setRiskScore(null);
+            setSetupStage("risk");
+            setApprovalThreshold(null);
             setWhy(null);
           }
         } catch {
@@ -408,12 +413,28 @@ export function WalletDemo({
     }
   }
 
-  function chooseRisk(n: number) {
+  function pickRisk(n: number) {
     if (isSending) return;
     setRiskScore(n);
-    // Ask the agent to SUGGEST matching agents (no money moved) for this score.
+    setSetupStage("approval");
+  }
+
+  async function finishSetup(threshold: number) {
+    if (isSending) return;
+    setApprovalThreshold(threshold);
+    setSetupStage("done");
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ approvalThreshold: threshold }),
+      });
+    } catch {
+      /* setting is best-effort; agent still works without it */
+    }
+    // Now ask the agent to SUGGEST matching agents (no money moved) for this score.
     void submitMessage(
-      `I'm a ${n} out of 10 on risk. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
+      `I'm a ${riskScore} out of 10 on risk, and I want to approve anything over $${threshold} before it moves. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
     );
   }
 
@@ -424,6 +445,8 @@ export function WalletDemo({
     setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
     setActions([]);
     setRiskScore(null);
+    setSetupStage("risk");
+    setApprovalThreshold(null);
     setWhy(null);
     void refreshLiveData();
   }
@@ -524,6 +547,12 @@ export function WalletDemo({
               <ShieldCheck size={13} />
               Base Sepolia USDC
             </span>
+            {approvalThreshold != null && (
+              <span className="pill" title="You'll be asked to approve moves above this amount">
+                <Lock size={13} />
+                Approve &gt; {money.format(approvalThreshold)}
+              </span>
+            )}
             <button
               className="btn btn-primary"
               type="button"
@@ -552,8 +581,9 @@ export function WalletDemo({
               isSending={isSending}
               messages={messages}
               actions={actions}
-              riskScore={riskScore}
-              onChooseRisk={chooseRisk}
+              setupStage={setupStage}
+              onPickRisk={pickRisk}
+              onFinishSetup={finishSetup}
               onInputChange={setInput}
               onSubmit={(e) => {
                 e.preventDefault();
@@ -609,8 +639,9 @@ function ChatPanel({
   isSending,
   messages,
   actions,
-  riskScore,
-  onChooseRisk,
+  setupStage,
+  onPickRisk,
+  onFinishSetup,
   onInputChange,
   onSubmit,
   onDemo,
@@ -620,14 +651,15 @@ function ChatPanel({
   isSending: boolean;
   messages: Message[];
   actions: Action[];
-  riskScore: number | null;
-  onChooseRisk: (n: number) => void;
+  setupStage: "risk" | "approval" | "done";
+  onPickRisk: (n: number) => void;
+  onFinishSetup: (threshold: number) => void;
   onInputChange: (v: string) => void;
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onDemo: () => void;
   onRecovery: () => void;
 }) {
-  const needsRisk = riskScore == null;
+  const onboarding = setupStage !== "done";
   const stackRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     stackRef.current?.scrollTo({ top: stackRef.current.scrollHeight, behavior: "smooth" });
@@ -647,7 +679,14 @@ function ChatPanel({
           </div>
         ))}
 
-        {needsRisk && <RiskPicker disabled={isSending} onChoose={onChooseRisk} />}
+        {onboarding && (
+          <OnboardingCard
+            stage={setupStage}
+            disabled={isSending}
+            onPickRisk={onPickRisk}
+            onFinish={onFinishSetup}
+          />
+        )}
 
         {actions.length > 0 && (
           <div className="actions">
@@ -691,7 +730,7 @@ function ChatPanel({
         </button>
       </form>
 
-      {!needsRisk && (
+      {!onboarding && (
         <div className="suggestions">
           <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
             ▶ Try an example: payday plan
@@ -705,14 +744,81 @@ function ChatPanel({
   );
 }
 
-/** First-run onboarding: pick a risk score 1–10 before anything else. */
-function RiskPicker({
+const RISK_WORD = ["", "very safe", "very safe", "cautious", "cautious", "balanced", "balanced", "growth-leaning", "growth-leaning", "aggressive", "aggressive"];
+const APPROVAL_PRESETS = [25, 100, 250];
+
+/**
+ * First-run onboarding: pick a risk score (slider 1–10), then an "approve before
+ * moving money" threshold. Both must happen before the user starts chatting.
+ */
+function OnboardingCard({
+  stage,
   disabled,
-  onChoose,
+  onPickRisk,
+  onFinish,
 }: {
+  stage: "risk" | "approval" | "done";
   disabled: boolean;
-  onChoose: (n: number) => void;
+  onPickRisk: (n: number) => void;
+  onFinish: (threshold: number) => void;
 }) {
+  const [risk, setRisk] = useState(5);
+  const [threshold, setThreshold] = useState(100);
+
+  if (stage === "approval") {
+    return (
+      <div className="risk-picker">
+        <div className="risk-picker-head">
+          <ShieldCheck size={14} />
+          <span>Approve before moving money</span>
+        </div>
+        <p className="risk-picker-sub">
+          Pick a safety threshold. Moves <strong>at or below</strong> this auto-run from your
+          automations and investments; anything <strong>above</strong> it, I&apos;ll ask you to
+          approve first.
+        </p>
+        <div className="threshold-value">
+          Auto-approve up to <strong>{money.format(threshold)}</strong>
+        </div>
+        <input
+          className="slider"
+          type="range"
+          min={0}
+          max={500}
+          step={25}
+          value={threshold}
+          disabled={disabled}
+          onChange={(e) => setThreshold(Number(e.target.value))}
+        />
+        <div className="risk-scale-labels">
+          <span>Ask about everything</span>
+          <span>$500+</span>
+        </div>
+        <div className="preset-row">
+          {APPROVAL_PRESETS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={`chip ${threshold === p ? "chip-active" : ""}`}
+              disabled={disabled}
+              onClick={() => setThreshold(p)}
+            >
+              Ask above {money.format(p)}
+            </button>
+          ))}
+        </div>
+        <button
+          className="btn btn-primary onboard-cta"
+          type="button"
+          disabled={disabled}
+          onClick={() => onFinish(threshold)}
+        >
+          Finish setup
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="risk-picker">
       <div className="risk-picker-head">
@@ -720,26 +826,34 @@ function RiskPicker({
         <span>First, how do you feel about risk?</span>
       </div>
       <p className="risk-picker-sub">
-        Pick where you sit on the scale — <strong>1</strong> means play it very safe,{" "}
-        <strong>10</strong> means go for maximum growth. I&apos;ll suggest agents that fit you.
+        Slide to where you sit — <strong>1</strong> means play it very safe, <strong>10</strong>{" "}
+        means go for maximum growth. I&apos;ll suggest agents that fit you.
       </p>
-      <div className="risk-scale">
-        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-          <button
-            key={n}
-            type="button"
-            className="risk-num"
-            disabled={disabled}
-            onClick={() => onChoose(n)}
-          >
-            {n}
-          </button>
-        ))}
+      <div className="threshold-value">
+        <strong>{risk}</strong> / 10 · {RISK_WORD[risk]}
       </div>
+      <input
+        className="slider"
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={risk}
+        disabled={disabled}
+        onChange={(e) => setRisk(Number(e.target.value))}
+      />
       <div className="risk-scale-labels">
         <span>Safer</span>
         <span>Riskier</span>
       </div>
+      <button
+        className="btn btn-primary onboard-cta"
+        type="button"
+        disabled={disabled}
+        onClick={() => onPickRisk(risk)}
+      >
+        Continue
+      </button>
     </div>
   );
 }

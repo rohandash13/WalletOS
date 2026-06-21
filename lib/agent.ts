@@ -11,7 +11,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { tools, executeTool, hydratePolicy } from "./tools";
-import { getEventCursor, getEventsSince } from "./redis";
+import { getEventCursor, getEventsSince, getStoredPolicy } from "./redis";
 import { USER_ID, type AppEvent } from "./wallet-types";
 
 const MODEL = "claude-opus-4-8";
@@ -38,6 +38,23 @@ Operating rules:
 - After you TAKE AN ACTION (moved, protected, or invested money, or created an automation), ALWAYS call explain_decision with a short, warm, plain-English summary of what you did and why. No jargon, no "crypto". For pure suggestions or questions, just reply in text — no explain_decision needed.
 - Be concise. Don't narrate routine steps; act, then explain at the end.
 - The spending policy enforces a per-transaction limit. If a tool returns a policy_violation, explain it kindly and suggest set_policy or a smaller amount.`;
+
+/**
+ * Append the user's "approve before moving money" rule when a threshold is set.
+ * Above the threshold the agent must confirm with the user before acting.
+ */
+function buildSystem(approvalThreshold?: number): string {
+  if (approvalThreshold == null || !Number.isFinite(approvalThreshold)) return SYSTEM;
+  return (
+    SYSTEM +
+    `\n- APPROVAL REQUIRED: The user set an approval threshold of $${approvalThreshold}. ` +
+    `Any SINGLE transfer (send_payment) or investment (route_to_agent) over $${approvalThreshold} ` +
+    `must be confirmed first: do NOT call the tool yet — tell the user exactly what you're about to ` +
+    `do (amount + destination/agent) and ask them to confirm, then act ONLY after they reply yes. ` +
+    `Moves of $${approvalThreshold} or less proceed normally without asking. This applies to ad-hoc ` +
+    `requests; automations the user already set up still run on payday as configured.`
+  );
+}
 
 export interface AgentToolCall {
   name: string;
@@ -67,6 +84,9 @@ export async function runAgent(
   await hydratePolicy(userId);
   const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 
+  const policy = await getStoredPolicy(userId);
+  const system = buildSystem(policy?.approvalThreshold);
+
   const history = histories.get(userId) ?? [];
   history.push({ role: "user", content: userText });
 
@@ -80,7 +100,7 @@ export async function runAgent(
       max_tokens: 8000,
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },
-      system: SYSTEM,
+      system,
       tools,
       messages: history,
     });
