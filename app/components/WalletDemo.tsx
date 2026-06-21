@@ -50,6 +50,20 @@ type MarketAgent = {
   online: boolean;
 };
 
+type AgentInvestment = {
+  agentId: string;
+  title: string;
+  invested: number;
+  txCount: number;
+  lastRoutedAt: number;
+  onChainUsdc: number;
+  onChainValue: number;
+  projectedApy: number;
+  projectedAnnualGrowth: number;
+  agentAddress: string;
+  explorerUrl: string;
+};
+
 const DEMO_USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID ?? "demo-user";
 
 const PRIMARY_PROMPT =
@@ -114,10 +128,12 @@ export function WalletDemo() {
   const [events, setEvents] = useState<WalletEvent[]>([]);
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [agents, setAgents] = useState<MarketAgent[]>([]);
+  const [investments, setInvestments] = useState<AgentInvestment[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
   const [riskScore, setRiskScore] = useState<number | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [isPaydayRunning, setIsPaydayRunning] = useState(false);
 
   const total = useMemo(() => buckets.reduce((s, b) => s + b.balance, 0), [buckets]);
   const available = useMemo(
@@ -132,7 +148,11 @@ export function WalletDemo() {
         fetch(`/api/events?userId=${DEMO_USER_ID}`, { cache: "no-store" }),
         fetch(`/api/automations?userId=${DEMO_USER_ID}`, { cache: "no-store" }),
       ]);
-      if (bal.ok) setBuckets(((await bal.json()) as BalanceResponse).buckets);
+      if (bal.ok) {
+        const balance = (await bal.json()) as BalanceResponse;
+        setBuckets(balance.buckets);
+        setRiskScore(balance.riskScore ?? null);
+      }
       if (ev.ok) setEvents(((await ev.json()) as { events: WalletEvent[] }).events);
       if (au.ok)
         setAutomations(((await au.json()) as { automations: Automation[] }).automations);
@@ -150,15 +170,60 @@ export function WalletDemo() {
     }
   }, []);
 
+  const fetchInvestments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/investments", { cache: "no-store" });
+      if (res.ok)
+        setInvestments(((await res.json()) as { agents: AgentInvestment[] }).agents);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const didBootstrap = useRef(false);
+
   useEffect(() => {
-    void refreshLiveData();
+    let cancelled = false;
+    const onLocalhost =
+      typeof window !== "undefined" &&
+      ["localhost", "127.0.0.1"].includes(window.location.hostname);
+
+    async function bootstrap() {
+      // On localhost, start every page load from a clean demo state (synced to
+      // the real on-chain balance). Guarded so it runs once, never in prod.
+      if (onLocalhost && !didBootstrap.current) {
+        didBootstrap.current = true;
+        try {
+          await fetch("/api/reset", { method: "POST" });
+          if (!cancelled) {
+            setTab("chat");
+            setInput("");
+            setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
+            setActions([]);
+            setRiskScore(null);
+            setWhy(null);
+          }
+        } catch {
+          /* ignore — fall back to whatever state the backend has */
+        }
+      }
+      if (!cancelled) void refreshLiveData();
+    }
+
+    void bootstrap();
     const interval = window.setInterval(refreshLiveData, 1600);
-    return () => window.clearInterval(interval);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [refreshLiveData]);
 
   useEffect(() => {
-    if (tab === "marketplace") void fetchAgents();
-  }, [tab, fetchAgents]);
+    if (tab === "marketplace") {
+      void fetchAgents();
+      void fetchInvestments();
+    }
+  }, [tab, fetchAgents, fetchInvestments]);
 
   async function submitMessage(text: string) {
     const msg = text.trim();
@@ -211,6 +276,48 @@ export function WalletDemo() {
     void refreshLiveData();
   }
 
+  async function generatePaycheck() {
+    if (isPaydayRunning) return;
+    setIsPaydayRunning(true);
+    try {
+      const res = await fetch("/api/payday", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: 2000, autoFundPayroll: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? "payday failed");
+      }
+      const body = (await res.json()) as { explorerUrl?: string };
+      setMessages((c) => [
+        ...c,
+        {
+          id: `payday_${Date.now()}`,
+          role: "assistant",
+          text: body.explorerUrl
+            ? "Your paycheck landed and WalletOS ran your active automations."
+            : "Your paycheck landed and WalletOS ran your active automations.",
+        },
+      ]);
+    } catch (err) {
+      setMessages((c) => [
+        ...c,
+        {
+          id: `payday_err_${Date.now()}`,
+          role: "assistant",
+          text:
+            err instanceof Error
+              ? err.message
+              : "I couldn't generate the paycheck right now.",
+        },
+      ]);
+    } finally {
+      setIsPaydayRunning(false);
+      void refreshLiveData();
+    }
+  }
+
   return (
     <main className="app">
       <div className="shell">
@@ -254,8 +361,17 @@ export function WalletDemo() {
           <div className="nav-bottom">
             <span className="pill">
               <ShieldCheck size={13} />
-              Testnet USDC
+              Base Sepolia USDC
             </span>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void generatePaycheck()}
+              disabled={isPaydayRunning}
+            >
+              <CalendarClock size={14} />
+              {isPaydayRunning ? "Generating..." : "Generate paycheck"}
+            </button>
             <button className="btn btn-ghost" type="button" onClick={() => void resetDemo()}>
               <RotateCcw size={14} />
               Reset
@@ -296,6 +412,7 @@ export function WalletDemo() {
             <MarketplacePanel
               agents={agents}
               events={events}
+              investments={investments}
               riskScore={riskScore}
               available={available}
               onCreate={async (goal) => {
@@ -506,7 +623,7 @@ function AutomationsPanel({
           </div>
           {needs("amount") && (
             <div className="field">
-              <label>Amount (USDC)</label>
+              <label>Amount ($)</label>
               <input
                 type="number"
                 min="0"
@@ -594,12 +711,14 @@ function AutomationsPanel({
 function MarketplacePanel({
   agents,
   events,
+  investments,
   riskScore,
   available,
   onCreate,
 }: {
   agents: MarketAgent[];
   events: WalletEvent[];
+  investments: AgentInvestment[];
   riskScore: number | null;
   available: number;
   onCreate: (goal: string) => Promise<void>;
@@ -607,6 +726,7 @@ function MarketplacePanel({
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const agentEvents = events.filter((e) => e.type === "agent_routed");
+  const totalInvested = investments.reduce((s, a) => s + a.invested, 0);
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -695,6 +815,45 @@ function MarketplacePanel({
           })}
           {agents.length === 0 && <p className="muted">Loading helpers…</p>}
         </div>
+
+        {investments.length > 0 && (
+          <>
+            <div className="divider" />
+            <div className="panel-head" style={{ marginBottom: 8 }}>
+              <p className="section-label">Invested funds</p>
+              <span className="tag good">{money.format(totalInvested)} working</span>
+            </div>
+            <div className="list">
+              {investments.map((inv) => (
+                <div className="row-card" key={inv.agentId}>
+                  <div className="row-icon">
+                    <PiggyBank size={17} />
+                  </div>
+                  <div className="row-main">
+                    <h3>{inv.title}</h3>
+                    <p>
+                      {money.format(inv.invested)} invested
+                      {inv.projectedApy > 0 && (
+                        <> · ≈{inv.projectedApy}%/yr (+{money.format(inv.projectedAnnualGrowth)})</>
+                      )}
+                      {inv.onChainUsdc > 0 && <> · {inv.onChainUsdc} USDC on-chain</>}
+                    </p>
+                  </div>
+                  <div className="row-meta">
+                    {inv.explorerUrl && (
+                      <a className="proof" href={inv.explorerUrl} target="_blank" rel="noreferrer">
+                        wallet <ExternalLink size={11} />
+                      </a>
+                    )}
+                    <span className="when">
+                      {inv.txCount} {inv.txCount === 1 ? "deposit" : "deposits"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="divider" />
         <p className="section-label">Helper activity</p>

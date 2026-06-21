@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "A message is required." }, { status: 400 });
     }
     const turn = await runAgent(message);
-    return NextResponse.json(await toChatResponse(turn));
+    return NextResponse.json(await toChatResponse(turn, message));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });

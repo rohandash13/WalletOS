@@ -1,22 +1,22 @@
 /**
  * POST /api/demo/reset — full demo restart.
- * Zeros all buckets, clears chat history, then seeds a fresh 2000 USDC paycheck.
- * Body: { amount?: number } — override the seed amount (default 2000).
+ * Zeros all buckets, clears chat history, then syncs Available to the real CDP
+ * wallet's on-chain USDC balance.
  * Returns: { portfolio }
  */
-import { NextRequest, NextResponse } from "next/server";
-import { seedDemoPaycheck } from "@/lib/redis";
+import { NextResponse } from "next/server";
+import { syncLedgerToOnChainBalance } from "@/lib/redis";
 import { resetConversation } from "@/lib/agent";
+import { getWallet } from "@/lib/wallet";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   try {
-    const body = await req.json().catch(() => ({}));
-    const amount = Number(body?.amount ?? 2000) || 2000;
     resetConversation();
-    const portfolio = await seedDemoPaycheck(amount, true);
+    const onChainUsdc = await getWallet().getUsdcBalance();
+    const portfolio = await syncLedgerToOnChainBalance(onChainUsdc);
     return NextResponse.json({ portfolio });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

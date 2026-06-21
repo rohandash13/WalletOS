@@ -591,6 +591,9 @@ a {
 .bar > span.rent_safe {
   background: var(--tan);
 }
+.bar > span.savings {
+  background: #6f9b7a;
+}
 .bar > span.stable_invest {
   background: var(--green-deep);
 }

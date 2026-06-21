@@ -94,6 +94,10 @@ export class WalletService {
     return this.accountPromise;
   }
 
+  private namedAccount(name: string) {
+    return this.cdp.evm.getOrCreateAccount({ name });
+  }
+
   /** The wallet's on-chain address. */
   async getAddress(): Promise<string> {
     const account = await this.account();
@@ -105,8 +109,22 @@ export class WalletService {
    * marketplace agent's wallet, so we can make a real agent-to-agent transfer to it.
    */
   async resolveAddress(name: string): Promise<string> {
-    const account = await this.cdp.evm.getOrCreateAccount({ name });
+    const account = await this.namedAccount(name);
     return account.address;
+  }
+
+  async getUsdcBalanceForAccount(name: string): Promise<number> {
+    const account = await this.namedAccount(name);
+    return this.balanceOf(account, "usdc");
+  }
+
+  async requestFaucetForAccount(name: string, token: "eth" | "usdc"): Promise<string> {
+    const account = await this.namedAccount(name);
+    const { transactionHash } = await account.requestFaucet({
+      network: NETWORK,
+      token,
+    });
+    return transactionHash;
   }
 
   explorerUrl(txHash: string): string {
@@ -120,23 +138,23 @@ export class WalletService {
   /** USDC balance as a human-readable number (e.g. 12.5). */
   async getUsdcBalance(): Promise<number> {
     const account = await this.account();
-    const { balances } = await account.listTokenBalances({ network: NETWORK });
-    const usdc = balances.find(
-      (b) => b.token.symbol?.toLowerCase() === "usdc",
-    );
-    if (!usdc) return 0;
-    return Number(formatUnits(usdc.amount.amount, usdc.amount.decimals));
+    return this.balanceOf(account, "usdc");
   }
 
   /** ETH (gas) balance as a human-readable number. */
   async getEthBalance(): Promise<number> {
     const account = await this.account();
+    return this.balanceOf(account, "eth");
+  }
+
+  private async balanceOf(
+    account: Awaited<ReturnType<CdpClient["evm"]["getOrCreateAccount"]>>,
+    symbol: string,
+  ): Promise<number> {
     const { balances } = await account.listTokenBalances({ network: NETWORK });
-    const eth = balances.find(
-      (b) => b.token.symbol?.toLowerCase() === "eth",
-    );
-    if (!eth) return 0;
-    return Number(formatUnits(eth.amount.amount, eth.amount.decimals));
+    const token = balances.find((b) => b.token.symbol?.toLowerCase() === symbol.toLowerCase());
+    if (!token) return 0;
+    return Number(formatUnits(token.amount.amount, token.amount.decimals));
   }
 
   /**
@@ -176,6 +194,34 @@ export class WalletService {
     this.enforcePolicy(to, amountNum);
 
     const account = await this.account();
+    const atomic = parseUnits(String(amount), USDC_DECIMALS);
+
+    const { transactionHash } = await account.transfer({
+      to: to as `0x${string}`,
+      amount: atomic,
+      token: "usdc",
+      network: NETWORK,
+    });
+
+    return {
+      transactionHash,
+      explorerUrl: this.explorerUrl(transactionHash),
+      amount: String(amount),
+      to,
+    };
+  }
+
+  async sendUsdcFromAccount(
+    fromAccountName: string,
+    to: string,
+    amount: number | string,
+  ): Promise<TransferResult> {
+    const amountNum = typeof amount === "string" ? Number(amount) : amount;
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      throw new PolicyViolationError(`Invalid transfer amount: ${amount}`);
+    }
+
+    const account = await this.namedAccount(fromAccountName);
     const atomic = parseUnits(String(amount), USDC_DECIMALS);
 
     const { transactionHash } = await account.transfer({

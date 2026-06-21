@@ -16,8 +16,26 @@
  * buckets.
  */
 
+import { createHash } from "node:crypto";
 import type { BucketId } from "./wallet-types";
 import { listDynamicAgents, type StoredAgent } from "./redis";
+
+/**
+ * Deterministic CDP account name for an agent's wallet.
+ *
+ * CDP account names must be alphanumeric + hyphens, 2–36 chars. Built-in agent
+ * ids stay readable (e.g. `walletos-agent-stable-invest`); user-created ids can be
+ * long, so anything over the limit falls back to a stable hash of the id. The
+ * mapping is deterministic so routing AND balance tracking resolve the same wallet.
+ */
+export function agentAccountName(agentId: string): string {
+  const base = "walletos-agent-";
+  const sanitized = agentId.replace(/_/g, "-").replace(/[^a-zA-Z0-9-]/g, "");
+  const name = `${base}${sanitized}`;
+  if (name.length >= 2 && name.length <= 36) return name;
+  const hash = createHash("sha1").update(agentId).digest("hex").slice(0, 12);
+  return `${base}${hash}`; // 15 + 12 = 27 chars, within limit
+}
 
 export interface MarketplaceAgent {
   id: string;

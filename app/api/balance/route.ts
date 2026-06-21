@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const snapshot = await getBalanceSnapshot();
-    return NextResponse.json(toBalanceResponse(snapshot));
+    return NextResponse.json(await toBalanceResponse(snapshot));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });

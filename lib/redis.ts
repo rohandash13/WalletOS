@@ -25,6 +25,7 @@ import {
   type EventType,
   type Automation,
 } from "./wallet-types";
+import { toDemoUsd, scaleLabel } from "./money";
 
 /* ----------------------------- low-level store ---------------------------- */
 
@@ -139,6 +140,7 @@ const k = {
   events: (u = USER_ID) => `events:${u}`,
   eventsSeq: (u = USER_ID) => `events:seq:${u}`,
   policy: (u = USER_ID) => `policy:${u}`,
+  preferences: (u = USER_ID) => `preferences:${u}`,
   automations: (u = USER_ID) => `automations:${u}`,
   agents: () => `agents:dynamic`,
 };
@@ -182,6 +184,16 @@ export async function moveBetweenBuckets(
 ): Promise<void> {
   await adjustBucket(from, -amount);
   await adjustBucket(to, amount);
+}
+
+async function clearDemoState(): Promise<void> {
+  for (const b of BUCKETS) await setBucket(b, 0);
+  await kv.del(k.tx());
+  await kv.del(k.events());
+  await kv.del(k.eventsSeq());
+  await kv.del(k.automations());
+  await kv.del(k.policy());
+  await kv.del(k.preferences());
 }
 
 /* ---------------------------------- tx ------------------------------------ */
@@ -237,6 +249,20 @@ export async function setStoredPolicy(policy: StoredPolicy): Promise<void> {
   await kv.set(k.policy(), JSON.stringify(policy));
 }
 
+export interface StoredPreferences {
+  riskScore?: number;
+}
+
+export async function getStoredPreferences(): Promise<StoredPreferences> {
+  const raw = await kv.get(k.preferences());
+  return raw ? (JSON.parse(raw) as StoredPreferences) : {};
+}
+
+export async function setStoredPreferences(prefs: StoredPreferences): Promise<void> {
+  const current = await getStoredPreferences();
+  await kv.set(k.preferences(), JSON.stringify({ ...current, ...prefs }));
+}
+
 /* ----------------------------- automations -------------------------------- */
 
 export async function addAutomation(a: Automation): Promise<void> {
@@ -246,19 +272,13 @@ export async function addAutomation(a: Automation): Promise<void> {
 /* ------------------------------ demo seed --------------------------------- */
 
 /**
- * Seed the demo "paycheck": credit the Available bucket so the demo-script numbers
+ * Seed the "paycheck": credit the Available bucket so the script numbers
  * (e.g. $2,000 deposit) land cleanly. The on-chain wallet still only holds scarce
  * test USDC — buckets are the logical portfolio; real transfers settle what fits.
  */
-export async function seedDemoPaycheck(amount = 2000, reset = false): Promise<Portfolio> {
+export async function seedDemoPaycheck(amount = 5000, reset = false): Promise<Portfolio> {
   if (reset) {
-    for (const b of BUCKETS) await setBucket(b, 0);
-    // Full demo restart: clear the tx log, event stream, automations, and policy.
-    await kv.del(k.tx());
-    await kv.del(k.events());
-    await kv.del(k.eventsSeq());
-    await kv.del(k.automations());
-    await kv.del(k.policy());
+    await clearDemoState();
   }
   await adjustBucket("available", amount);
   const portfolio = await getPortfolio();
@@ -272,7 +292,7 @@ export async function seedDemoPaycheck(amount = 2000, reset = false): Promise<Po
     from: "paycheck",
     to: "available",
     toBucket: "available",
-    note: "Simulated paycheck deposit",
+    note: "Paycheck deposit",
     status: "confirmed",
     ts: Date.now(),
   };
@@ -280,6 +300,41 @@ export async function seedDemoPaycheck(amount = 2000, reset = false): Promise<Po
   await publishEvent("portfolio", `Paycheck deposit: +${amount} USDC to Available`, {
     bucket: "available",
     delta: amount,
+  });
+  return portfolio;
+}
+
+/**
+ * Reset the demo ledger to the actual CDP wallet's on-chain balance, expressed in
+ * USD-equivalent balance using the configured testnet scale.
+ */
+export async function syncLedgerToOnChainBalance(usdcBalance: number): Promise<Portfolio> {
+  await clearDemoState();
+  const amount = toDemoUsd(usdcBalance);
+  if (amount > 0) {
+    await setBucket("available", amount);
+  }
+  const portfolio = await getPortfolio();
+
+  const tx: TxRecord = {
+    id: `tx_sync_${Date.now().toString(36)}`,
+    kind: "internal",
+    type: "deposit",
+    amount,
+    token: "usdc",
+    from: "on_chain_wallet",
+    to: "available",
+    toBucket: "available",
+    note: `Synced ledger from wallet balance (${scaleLabel()})`,
+    status: "confirmed",
+    ts: Date.now(),
+  };
+  await addTx(tx);
+  await publishEvent("portfolio", `Balance refreshed`, {
+    bucket: "available",
+    balance: amount,
+    onChainUsdc: usdcBalance,
+    scale: scaleLabel(),
   });
   return portfolio;
 }

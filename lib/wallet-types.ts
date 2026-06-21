@@ -28,13 +28,15 @@ export interface TxRecord {
   id: string;
   /** on_chain = real USDC moved; internal = bucket-to-bucket ledger move. */
   kind: "on_chain" | "internal";
-  type: "send_payment" | "route_to_agent" | "automation" | "faucet" | "rebalance";
+  type: "send_payment" | "route_to_agent" | "automation" | "faucet" | "deposit" | "rebalance";
   amount: number;
   token: "usdc";
   from: string;
   to: string;
   fromBucket?: BucketId;
   toBucket?: BucketId;
+  /** For route_to_agent: which marketplace agent received the funds. */
+  agentId?: string;
   txHash?: string;
   explorerUrl?: string;
   note?: string;
