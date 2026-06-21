@@ -5,6 +5,8 @@
  * that touches the wallet + Redis: each money action enforces the spending policy,
  * writes a TxRecord, and publishes a realtime event. The agent (lib/agent.ts) never
  * touches the rail directly — it can only request these tools.
+ *
+ * All state is per-user (userId), so each authenticated user has an isolated ledger.
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
@@ -28,18 +30,13 @@ import {
   type TxRecord,
   type Automation,
 } from "./wallet-types";
-import { selectAgent, resolveAgent, routeViaAgent } from "./marketplace";
+import { selectAgent, resolveAgent, routeViaAgent, agentAccountName } from "./marketplace";
+import { toChainUsdc, scaleLabel } from "./money";
 
 const USDC = "usdc" as const;
-const BALANCE_TIMEOUT_MS = Number(process.env.WALLETOS_BALANCE_TIMEOUT_MS ?? 3500);
-const DEMO_WALLET_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function sum(nums: number[]): number {
-  return Math.round(nums.reduce((a, b) => a + b, 0) * 1e6) / 1e6;
 }
 
 function isBucket(v: unknown): v is BucketId {
@@ -47,45 +44,16 @@ function isBucket(v: unknown): v is BucketId {
 }
 
 /**
- * Reconcile the bucket ledger with the real on-chain balance. Any USDC that
- * arrived (faucet, a paycheck deposit) shows up as a surplus and is credited to
- * `available`. Keeps the invariant: sum(buckets) == on-chain USDC.
+ * Read the real on-chain balance. Deposits are credited only by explicit payroll
+ * or paycheck flows, never as a side effect of viewing balance.
  */
-async function reconcile(userId: string = USER_ID): Promise<{ usdc: number; eth: number }> {
+async function reconcile(): Promise<{ usdc: number; eth: number }> {
   const wallet = getWallet();
-  const [usdc, eth, portfolio] = await Promise.all([
+  const [usdc, eth] = await Promise.all([
     wallet.getUsdcBalance(),
     wallet.getEthBalance(),
-    getPortfolio(userId),
   ]);
-  const ledger = sum(BUCKETS.map((b) => portfolio[b]));
-  const surplus = Math.round((usdc - ledger) * 1e6) / 1e6;
-  if (surplus > 0.000001) {
-    await adjustBucket("available", surplus, userId);
-    await publishEvent("portfolio", `Deposit of ${surplus} USDC credited to Available`, {
-      bucket: "available",
-      delta: surplus,
-    }, userId);
-  }
   return { usdc, eth };
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 }
 
 /* --------------------------- tool definitions ----------------------------- */
@@ -167,7 +135,7 @@ export const tools: Anthropic.Tool[] = [
         agent: {
           type: "string",
           description:
-            "Optional explicit agent id (e.g. savings, stable_invest, balanced_growth, growth, high_yield, or a user-created agent id). Omit to auto-select by risk + amount.",
+            "Optional explicit agent — either an id (e.g. savings, stable_invest, balanced_growth, growth, high_yield) OR the agent's display name (e.g. 'Stable-Invest', 'Home Fund Keeper', or any user-created agent's name). Pass this whenever the user names a specific agent. Omit ONLY to auto-select by risk + amount.",
         },
         amount: { type: "number", description: "USDC to route" },
         riskScore: { type: "number", description: "User risk score 1-10" },
@@ -269,36 +237,10 @@ export async function executeTool(
 
 /** Shared balance snapshot used by both the get_balance tool and GET /api/balance. */
 export async function getBalanceSnapshot(userId: string = USER_ID) {
-  const [portfolio, txs] = await Promise.all([
-    getPortfolio(userId),
-    listTxs(10, userId),
-  ]);
-
-  try {
-    const [{ usdc, eth }, address] = await withTimeout(
-      Promise.all([reconcile(userId), getWallet().getAddress()]),
-      BALANCE_TIMEOUT_MS,
-      "Live wallet balance",
-    );
-    const reconciledPortfolio = await getPortfolio(userId);
-    return {
-      address,
-      onChain: { usdc, eth },
-      portfolio: reconciledPortfolio,
-      recentTransactions: txs,
-      live: true,
-    };
-  } catch (err) {
-    const warning = err instanceof Error ? err.message : String(err);
-    return {
-      address: DEMO_WALLET_ADDRESS,
-      onChain: { usdc: 0, eth: 0 },
-      portfolio,
-      recentTransactions: txs,
-      live: false,
-      warning,
-    };
-  }
+  const { usdc, eth } = await reconcile();
+  const [portfolio, txs] = await Promise.all([getPortfolio(userId), listTxs(10, userId)]);
+  const address = await getWallet().getAddress();
+  return { address, onChain: { usdc, eth }, portfolio, recentTransactions: txs };
 }
 
 async function handleSendPayment(input: Record<string, unknown>, userId: string) {
@@ -323,19 +265,25 @@ async function handleSendPayment(input: Record<string, unknown>, userId: string)
     );
   }
 
-  // Real on-chain settlement, capped to actual on-chain USDC (test USDC is scarce;
-  // the bucket ledger carries the full logical amount). Produces a real tx hash.
-  const onChainUsdc = await wallet.getUsdcBalance();
-  const settle = Math.min(amount, Math.floor(onChainUsdc * 1e6) / 1e6);
-  let txHash: string | undefined;
-  let explorerUrl: string | undefined;
-  let settledOnChain = 0;
-  if (settle >= 0.000001) {
-    const transfer = await wallet.sendUsdc(to, settle);
-    txHash = transfer.transactionHash;
-    explorerUrl = transfer.explorerUrl;
-    settledOnChain = settle;
+  const portfolio = await getPortfolio(userId);
+  if (portfolio[fromBucket] < amount) {
+    throw new Error(
+      `Insufficient ${BUCKET_LABELS[fromBucket]} balance: ${portfolio[fromBucket]} < ${amount}`,
+    );
   }
+
+  // Real on-chain settlement only, scaled for the demo economy. User-facing
+  // amounts stay in relatable dollars; Base Sepolia moves the scaled test USDC.
+  const chainAmount = toChainUsdc(amount);
+  const onChainUsdc = await wallet.getUsdcBalance();
+  if (onChainUsdc < chainAmount) {
+    throw new Error(
+      `Insufficient on-chain USDC: ${onChainUsdc} < ${chainAmount} (${scaleLabel()})`,
+    );
+  }
+  const transfer = await wallet.sendUsdc(to, chainAmount);
+  const txHash = transfer.transactionHash;
+  const explorerUrl = transfer.explorerUrl;
 
   const newBucket = await adjustBucket(fromBucket, -amount, userId);
 
@@ -366,7 +314,8 @@ async function handleSendPayment(input: Record<string, unknown>, userId: string)
     transactionHash: txHash,
     explorerUrl,
     amount,
-    settledOnChain,
+    settledOnChain: chainAmount,
+    scale: scaleLabel(),
     to,
     fromBucket,
     bucketBalance: newBucket,
@@ -411,8 +360,17 @@ async function handleCreateAutomation(input: Record<string, unknown>, userId: st
   };
   await addAutomation(automation, userId);
 
-  // protect_bucket reserves funds immediately (available -> protected bucket).
-  if (type === "protect_bucket" && automation.amount && automation.bucket) {
+  const isPaydayRule = automation.schedule?.toLowerCase() === "payday";
+
+  // protect_bucket reserves funds immediately only for immediate rules. Paycheck
+  // rules are stored and run when /api/payday lands new income.
+  if (type === "protect_bucket" && automation.amount && automation.bucket && !isPaydayRule) {
+    const portfolio = await getPortfolio(userId);
+    if (portfolio.available < automation.amount) {
+      throw new Error(
+        `Insufficient Available balance to protect ${automation.amount}: ${portfolio.available} available`,
+      );
+    }
     await moveBetweenBuckets("available", automation.bucket, automation.amount, userId);
     await publishEvent(
       "portfolio",
@@ -480,23 +438,19 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
   // 1. Ask the Fetch uAgent for its allocation/decision (local fallback if down).
   const plan = await routeViaAgent(agent, amount, riskScore);
 
-  // 2. Real on-chain agent-to-agent settlement to the agent's CDP wallet,
-  //    capped to what's actually on-chain (test USDC is scarce; ledger is logical).
+  // 2. Real on-chain agent-to-agent settlement to the agent's CDP wallet.
   const wallet = getWallet();
-  // CDP account names must be alphanumeric + hyphens (2-36 chars) — no underscores.
-  const agentAccountName = `walletos-agent-${agent.id.replace(/_/g, "-")}`;
-  const agentAddress = await wallet.resolveAddress(agentAccountName);
+  const agentAddress = await wallet.resolveAddress(agentAccountName(agent.id));
+  const chainAmount = toChainUsdc(amount);
   const onChainUsdc = await wallet.getUsdcBalance();
-  const settle = Math.min(amount, Math.floor(onChainUsdc * 1e6) / 1e6);
-  let txHash: string | undefined;
-  let explorerUrl: string | undefined;
-  let settledOnChain = 0;
-  if (settle >= 0.000001) {
-    const transfer = await wallet.sendUsdc(agentAddress, settle);
-    txHash = transfer.transactionHash;
-    explorerUrl = transfer.explorerUrl;
-    settledOnChain = settle;
+  if (onChainUsdc < chainAmount) {
+    throw new Error(
+      `Insufficient on-chain USDC: ${onChainUsdc} < ${chainAmount} (${scaleLabel()})`,
+    );
   }
+  const transfer = await wallet.sendUsdc(agentAddress, chainAmount);
+  const txHash = transfer.transactionHash;
+  const explorerUrl = transfer.explorerUrl;
 
   // 3. Logical ledger move available -> agent's bucket (full amount).
   await moveBetweenBuckets("available", agent.bucket, amount, userId);
@@ -512,6 +466,7 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
     to: agentAddress,
     fromBucket: "available",
     toBucket: agent.bucket,
+    agentId: agent.id,
     txHash,
     explorerUrl,
     note: `${agent.title} · risk ${riskScore}/10 · ${plan.strategy}`,
@@ -523,7 +478,7 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
   await publishEvent(
     "agent",
     `Routed ${amount} USDC to ${agent.title} (risk ${riskScore}/10, ~${plan.projectedApy}% APY)${plan.live ? "" : " [offline strategy]"}`,
-    { agent: agent.id, plan, settledOnChain, txHash, explorerUrl, agentAddress },
+    { agent: agent.id, plan, settledOnChain: chainAmount, scale: scaleLabel(), txHash, explorerUrl, agentAddress },
     userId,
   );
   await publishEvent("portfolio", `${BUCKET_LABELS[agent.bucket]} → ${updated[agent.bucket]} USDC`, {
@@ -541,7 +496,8 @@ async function handleRouteToAgent(input: Record<string, unknown>, userId: string
     projectedApy: plan.projectedApy,
     explanation: plan.explanation,
     agentAddress,
-    settledOnChain,
+    settledOnChain: chainAmount,
+    scale: scaleLabel(),
     txHash,
     explorerUrl,
     live: plan.live,

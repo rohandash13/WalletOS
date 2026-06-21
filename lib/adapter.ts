@@ -1,14 +1,14 @@
 /**
  * lib/adapter.ts — maps the REAL backend's internal shapes onto the frontend's
- * JSON contract (lib/types.ts), so Person B's UI runs unchanged on the real
+ * JSON contract (lib/types.ts), so the UI runs unchanged on the real
  * Claude + CDP + Fetch backend.
  *
  * Bucket reconciliation: the backend ledger uses `available/rent/savings/
- * stable_invest`; the UI renders `checking/rent_safe/family_payment/stable_invest`.
- *   available + savings -> checking   (spare cash; demo never funds savings)
- *   rent               -> rent_safe   (protected)
- *   (family payments leave the wallet via send_payment, so family_payment = 0)
- *   stable_invest      -> stable_invest
+ * stable_invest`; the UI renders each bucket separately.
+ *   available     -> checking (Available)
+ *   savings       -> savings  (Savings; funded by auto-save rules)
+ *   rent          -> rent_safe (Protected)
+ *   stable_invest -> stable_invest (Invested)
  */
 
 import type {
@@ -17,6 +17,7 @@ import type {
   Automation as LedgerAutomation,
   EventType,
 } from "./wallet-types";
+import { USER_ID } from "./wallet-types";
 import type {
   Portfolio as UiPortfolio,
   Bucket,
@@ -27,7 +28,6 @@ import type {
   BalanceResponse,
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
-import { USER_ID } from "./wallet-types";
 import { getPortfolio, getEventsSince, listAutomations } from "./redis";
 import { getBalanceSnapshot, automationLabel } from "./tools";
 
@@ -45,7 +45,8 @@ function str(v: unknown): string | undefined {
 
 export function toUiPortfolio(p: LedgerPortfolio): UiPortfolio {
   return {
-    checking: round(p.available + p.savings),
+    checking: round(p.available),
+    savings: round(p.savings),
     rent_safe: round(p.rent),
     family_payment: 0,
     stable_invest: round(p.stable_invest),
@@ -54,10 +55,9 @@ export function toUiPortfolio(p: LedgerPortfolio): UiPortfolio {
 
 export function toBuckets(p: LedgerPortfolio): Bucket[] {
   const ui = toUiPortfolio(p);
-  // Three meaningful buckets only — Family Payment was always $0 (sent funds leave
-  // the wallet), so it's dropped to reduce clutter.
   return [
     { name: "Available", key: "checking", balance: ui.checking, protected: false },
+    { name: "Savings", key: "savings", balance: ui.savings, protected: false },
     { name: "Protected", key: "rent_safe", balance: ui.rent_safe, protected: true },
     { name: "Invested", key: "stable_invest", balance: ui.stable_invest, protected: false },
   ];
@@ -72,7 +72,7 @@ export function toBalanceResponse(snap: Snapshot): BalanceResponse {
   return {
     walletAddress: snap.address,
     network: "base-sepolia",
-    asset: "testnet USDC",
+    asset: "USD",
     walletBalance: round(buckets.reduce((sum, b) => sum + b.balance, 0)),
     buckets,
     updatedAt: new Date().toISOString(),
@@ -105,7 +105,19 @@ export function toWalletEvent(e: AppEvent): WalletEvent {
 
 /** Newest-first, for the "Live activity" feed. */
 export function toWalletEvents(events: AppEvent[]): WalletEvent[] {
-  return [...events].sort((a, b) => b.id - a.id).map(toWalletEvent);
+  return [...events]
+    .filter((e) => {
+      // Hide the on-chain balance-sync events (from reset) — they're plumbing.
+      const data = asRecord(e.data);
+      const isBalanceSync =
+        e.type === "portfolio" &&
+        (e.summary === "Balance refreshed" ||
+          e.summary.toLowerCase().startsWith("synced ")) &&
+        data.onChainUsdc != null;
+      return !isBalanceSync;
+    })
+    .sort((a, b) => b.id - a.id)
+    .map(toWalletEvent);
 }
 
 /* ------------------------------ automations ------------------------------- */
@@ -142,7 +154,7 @@ export function toActions(toolCalls: AgentToolCall[]): Action[] {
           type: "send_payment",
           status,
           amount: Number(result.amount ?? input.amount) || undefined,
-          asset: "USDC",
+          asset: "USD",
           txHash: str(result.transactionHash),
           explorerUrl: str(result.explorerUrl),
         });
@@ -152,7 +164,7 @@ export function toActions(toolCalls: AgentToolCall[]): Action[] {
           type: "route_to_agent",
           status,
           amount: Number(result.amount ?? input.amount) || undefined,
-          asset: "USDC",
+          asset: "USD",
           agentName: str(result.title) ?? "Stable-Invest",
           txHash: str(result.txHash),
           explorerUrl: str(result.explorerUrl),
@@ -163,7 +175,7 @@ export function toActions(toolCalls: AgentToolCall[]): Action[] {
           type: "rebalance_funds",
           status,
           amount: Number(result.amount ?? input.amount) || undefined,
-          asset: "USDC",
+          asset: "USD",
         });
         break;
       case "set_policy":

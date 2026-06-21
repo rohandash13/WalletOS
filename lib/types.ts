@@ -1,5 +1,6 @@
 export type BucketKey =
   | "checking"
+  | "savings"
   | "rent_safe"
   | "family_payment"
   | "stable_invest"
@@ -14,6 +15,7 @@ export type Bucket = {
 
 export type Portfolio = {
   checking: number;
+  savings: number;
   rent_safe: number;
   family_payment: number;
   stable_invest: number;
@@ -72,5 +74,6 @@ export type BalanceResponse = {
   asset: string;
   walletBalance: number;
   buckets: Bucket[];
+  riskScore?: number;
   updatedAt: string;
 };

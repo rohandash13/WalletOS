@@ -1,10 +1,10 @@
 /**
- * POST /api/demo/seed — seed the demo "paycheck" into the Available bucket.
- * Body: { amount?: number (default 2000), reset?: boolean (zero all buckets first) }
+ * POST /api/demo/seed — seed the demo starting balance into the Available bucket.
+ * Body: { amount?: number (default 5000), reset?: boolean (zero all buckets first) }
  * Returns: { portfolio }
  *
- * Lets the demo start from a believable balance ("I get paid $2k on the 1st")
- * without needing real on-chain USDC.
+ * Lets the demo start from a believable opening balance ($5,000) without needing
+ * real on-chain USDC. Payday (/api/payday) is the separate +$2,000 recurring income.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { seedDemoPaycheck } from "@/lib/redis";
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     if (session.response) return session.response;
 
     const body = await req.json().catch(() => ({}));
-    const amount = Number(body?.amount ?? 2000) || 2000;
+    const amount = Number(body?.amount ?? 5000) || 5000;
     const reset = Boolean(body?.reset);
     // A reset is a full demo restart: clear the chat history too.
     if (reset) resetConversation(session.userId);

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   FormEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -52,6 +53,34 @@ type MarketAgent = {
   online: boolean;
 };
 
+type AgentInvestment = {
+  agentId: string;
+  title: string;
+  invested: number;
+  txCount: number;
+  lastRoutedAt: number;
+  onChainUsdc: number;
+  onChainValue: number;
+  projectedApy: number;
+  projectedAnnualGrowth: number;
+  currentValue: number;
+  gain: number;
+  gainPct: number;
+  agentAddress: string;
+  explorerUrl: string;
+};
+
+type PendingApproval = {
+  id: string;
+  kind: "transfer" | "invest";
+  amount: number;
+  to?: string;
+  agentId?: string;
+  riskScore?: number;
+  note?: string;
+  createdAt: number;
+};
+
 const PRIMARY_PROMPT =
   "I get paid $2k on the 1st. Send my sister $50 every month, keep rent safe, and invest the rest low-risk - I'm a 3 out of 10 on risk.";
 const RECOVERY_PROMPT = "Actually, I need $200 back.";
@@ -64,6 +93,87 @@ const money = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 0,
 });
+
+/** Inline markdown → React: **bold**, *italic*, `code`. Safe (no raw HTML). */
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const regex = /\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[1] != null) nodes.push(<strong key={`${keyPrefix}-b${i}`}>{m[1]}</strong>);
+    else if (m[2] != null) nodes.push(<em key={`${keyPrefix}-i${i}`}>{m[2]}</em>);
+    else if (m[3] != null) nodes.push(<code key={`${keyPrefix}-c${i}`}>{m[3]}</code>);
+    last = m.index + m[0].length;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+/**
+ * Render the assistant's reply as light markdown: paragraphs, bullet/numbered
+ * lists, and inline bold/italic/code — so "**bold**" and "- item" look polished
+ * instead of showing raw asterisks.
+ */
+function FormattedMessage({ text }: { text: string }) {
+  const blocks: ReactNode[] = [];
+  let para: string[] = [];
+  let items: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const key = `p${blocks.length}`;
+    blocks.push(<p key={key}>{renderInline(para.join(" "), key)}</p>);
+    para = [];
+  };
+  const flushList = () => {
+    if (!items.length) return;
+    const key = `l${blocks.length}`;
+    const lis = items.map((it, i) => <li key={`${key}-${i}`}>{renderInline(it, `${key}-${i}`)}</li>);
+    blocks.push(listType === "ol" ? <ol key={key}>{lis}</ol> : <ul key={key}>{lis}</ul>);
+    items = [];
+    listType = null;
+  };
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    const bullet = line.match(/^[-*•]\s+(.*)$/);
+    const numbered = line.match(/^\d+[.)]\s+(.*)$/);
+    if (bullet) {
+      flushPara();
+      if (listType === "ol") flushList();
+      listType = "ul";
+      items.push(bullet[1]);
+    } else if (numbered) {
+      flushPara();
+      if (listType === "ul") flushList();
+      listType = "ol";
+      items.push(numbered[1]);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+
+  return <div className="md">{blocks}</div>;
+}
+
+/** Display an agent's name with an explicit "Agent" suffix (no double "Agent"). */
+function agentName(title: string): string {
+  const t = title.trim();
+  return /agent$/i.test(t) ? t : `${t} Agent`;
+}
 
 function actionLabel(a: Action) {
   if (a.type === "send_payment") return "Payment sent";
@@ -106,7 +216,6 @@ function formatDate(value: string) {
 
 export function WalletDemo({
   authUser,
-  profile,
 }: {
   authUser: AuthUser;
   profile: WalletOSProfile;
@@ -120,10 +229,17 @@ export function WalletDemo({
   const [events, setEvents] = useState<WalletEvent[]>([]);
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [agents, setAgents] = useState<MarketAgent[]>([]);
+  const [investments, setInvestments] = useState<AgentInvestment[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
-  const [riskScore, setRiskScore] = useState<number | null>(profile.riskScore);
+  // Undecided until the user picks a risk score in the chat onboarding.
+  const [riskScore, setRiskScore] = useState<number | null>(null);
+  // Two-step onboarding: pick risk, then an approve-before-moving-money threshold.
+  const [setupStage, setSetupStage] = useState<"risk" | "approval" | "done">("risk");
+  const [approvalThreshold, setApprovalThreshold] = useState<number | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [isPaydayRunning, setIsPaydayRunning] = useState(false);
   const refreshInFlight = useRef(false);
   const seedAttempted = useRef(false);
 
@@ -143,7 +259,7 @@ export function WalletDemo({
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 5000);
     try {
-      const [bal, ev, au] = await Promise.all([
+      const [bal, ev, au, ap] = await Promise.all([
         fetch(`/api/balance?userId=${authUser.userId}`, {
           cache: "no-store",
           headers: authHeaders,
@@ -159,6 +275,11 @@ export function WalletDemo({
           headers: authHeaders,
           signal: controller.signal,
         }),
+        fetch(`/api/approvals`, {
+          cache: "no-store",
+          headers: authHeaders,
+          signal: controller.signal,
+        }),
       ]);
       if (bal.ok) {
         let balance = (await bal.json()) as BalanceResponse;
@@ -168,15 +289,16 @@ export function WalletDemo({
           const seeded = await fetch("/api/demo/seed", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeaders },
-            body: JSON.stringify({ amount: 2000, reset: true }),
+            body: JSON.stringify({ amount: 5000, reset: true }),
             signal: controller.signal,
           });
           if (seeded.ok) {
             balance = {
               ...balance,
-              walletBalance: 2000,
+              walletBalance: 5000,
               buckets: [
-                { name: "Available", key: "checking", balance: 2000, protected: false },
+                { name: "Available", key: "checking", balance: 5000, protected: false },
+                { name: "Savings", key: "savings", balance: 0, protected: false },
                 { name: "Protected", key: "rent_safe", balance: 0, protected: true },
                 { name: "Invested", key: "stable_invest", balance: 0, protected: false },
               ],
@@ -188,6 +310,8 @@ export function WalletDemo({
       if (ev.ok) setEvents(((await ev.json()) as { events: WalletEvent[] }).events);
       if (au.ok)
         setAutomations(((await au.json()) as { automations: Automation[] }).automations);
+      if (ap.ok)
+        setPendingApprovals(((await ap.json()) as { approvals: PendingApproval[] }).approvals);
     } catch {
       /* keep last state */
     } finally {
@@ -208,15 +332,65 @@ export function WalletDemo({
     }
   }, [authHeaders]);
 
-  useEffect(() => {
-    void refreshLiveData();
-    const interval = window.setInterval(refreshLiveData, 5000);
-    return () => window.clearInterval(interval);
-  }, [refreshLiveData]);
+  const fetchInvestments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/investments", {
+        cache: "no-store",
+        headers: authHeaders,
+      });
+      if (res.ok)
+        setInvestments(((await res.json()) as { agents: AgentInvestment[] }).agents);
+    } catch {
+      /* ignore */
+    }
+  }, [authHeaders]);
+
+  const didBootstrap = useRef(false);
 
   useEffect(() => {
-    if (tab === "marketplace") void fetchAgents();
-  }, [tab, fetchAgents]);
+    let cancelled = false;
+    const onLocalhost =
+      typeof window !== "undefined" &&
+      ["localhost", "127.0.0.1"].includes(window.location.hostname);
+
+    async function bootstrap() {
+      // On localhost, start every page load from a clean demo state (fresh $5,000
+      // seed for the authed user). Guarded so it runs once, never in prod.
+      if (onLocalhost && !didBootstrap.current) {
+        didBootstrap.current = true;
+        try {
+          await fetch("/api/reset", { method: "POST", headers: authHeaders });
+          if (!cancelled) {
+            setTab("chat");
+            setInput("");
+            setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
+            setActions([]);
+            setRiskScore(null);
+            setSetupStage("risk");
+            setApprovalThreshold(null);
+            setWhy(null);
+          }
+        } catch {
+          /* ignore — fall back to whatever state the backend has */
+        }
+      }
+      if (!cancelled) void refreshLiveData();
+    }
+
+    void bootstrap();
+    const interval = window.setInterval(refreshLiveData, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [refreshLiveData, authHeaders]);
+
+  useEffect(() => {
+    if (tab === "marketplace") {
+      void fetchAgents();
+      void fetchInvestments();
+    }
+  }, [tab, fetchAgents, fetchInvestments]);
 
   async function submitMessage(text: string) {
     const msg = text.trim();
@@ -241,7 +415,7 @@ export function WalletDemo({
       if (body.buckets) setBuckets(body.buckets);
       setEvents(body.events ?? events);
       setAutomations(body.automations ?? automations);
-      setRiskScore(body.riskScore ?? riskScore);
+      setRiskScore((prev) => body.riskScore ?? prev);
       setWhy(body.why ?? why);
     } catch {
       setMessages((c) => [
@@ -258,6 +432,45 @@ export function WalletDemo({
     }
   }
 
+  function pickRisk(n: number) {
+    if (isSending) return;
+    setRiskScore(n);
+    setSetupStage("approval");
+  }
+
+  async function finishSetup(threshold: number) {
+    if (isSending) return;
+    setApprovalThreshold(threshold);
+    setSetupStage("done");
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ approvalThreshold: threshold }),
+      });
+    } catch {
+      /* setting is best-effort; agent still works without it */
+    }
+    // Now ask the agent to SUGGEST matching agents (no money moved) for this score.
+    void submitMessage(
+      `I'm a ${riskScore} out of 10 on risk, and I want to approve anything over $${threshold} before it moves. Don't move any money yet — just suggest how I could invest and which agents fit me.`,
+    );
+  }
+
+  async function resolveApproval(id: string, action: "approve" | "decline") {
+    setPendingApprovals((cur) => cur.filter((p) => p.id !== id)); // optimistic
+    try {
+      await fetch("/api/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ id, action }),
+      });
+    } catch {
+      /* refresh will restore it if it failed */
+    }
+    void refreshLiveData();
+  }
+
   async function resetDemo() {
     await fetch("/api/reset", { method: "POST", headers: authHeaders });
     setTab("chat");
@@ -265,8 +478,52 @@ export function WalletDemo({
     setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
     setActions([]);
     setRiskScore(null);
+    setSetupStage("risk");
+    setApprovalThreshold(null);
     setWhy(null);
     void refreshLiveData();
+  }
+
+  async function generatePaycheck() {
+    if (isPaydayRunning) return;
+    setIsPaydayRunning(true);
+    try {
+      const res = await fetch("/api/payday", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ amount: 2000, autoFundPayroll: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? "payday failed");
+      }
+      const body = (await res.json()) as { explorerUrl?: string };
+      setMessages((c) => [
+        ...c,
+        {
+          id: `payday_${Date.now()}`,
+          role: "assistant",
+          text: body.explorerUrl
+            ? "Your paycheck landed and WalletOS ran your active automations."
+            : "Your paycheck landed and WalletOS ran your active automations.",
+        },
+      ]);
+    } catch (err) {
+      setMessages((c) => [
+        ...c,
+        {
+          id: `payday_err_${Date.now()}`,
+          role: "assistant",
+          text:
+            err instanceof Error
+              ? err.message
+              : "I couldn't generate the paycheck right now.",
+        },
+      ]);
+    } finally {
+      setIsPaydayRunning(false);
+      void refreshLiveData();
+    }
   }
 
   return (
@@ -321,8 +578,23 @@ export function WalletDemo({
             </div>
             <span className="pill">
               <ShieldCheck size={13} />
-              Testnet USDC
+              Base Sepolia USDC
             </span>
+            {approvalThreshold != null && (
+              <span className="pill" title="You'll be asked to approve moves above this amount">
+                <Lock size={13} />
+                Approve &gt; {money.format(approvalThreshold)}
+              </span>
+            )}
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void generatePaycheck()}
+              disabled={isPaydayRunning}
+            >
+              <CalendarClock size={14} />
+              {isPaydayRunning ? "Generating..." : "Generate paycheck"}
+            </button>
             <SignOutButton redirectUrl="/">
               <button className="btn btn-ghost" type="button">
                 Sign out
@@ -342,6 +614,11 @@ export function WalletDemo({
               isSending={isSending}
               messages={messages}
               actions={actions}
+              setupStage={setupStage}
+              pendingApprovals={pendingApprovals}
+              onResolveApproval={resolveApproval}
+              onPickRisk={pickRisk}
+              onFinishSetup={finishSetup}
               onInputChange={setInput}
               onSubmit={(e) => {
                 e.preventDefault();
@@ -368,6 +645,7 @@ export function WalletDemo({
             <MarketplacePanel
               agents={agents}
               events={events}
+              investments={investments}
               riskScore={riskScore}
               available={available}
               onCreate={async (goal) => {
@@ -396,6 +674,11 @@ function ChatPanel({
   isSending,
   messages,
   actions,
+  setupStage,
+  pendingApprovals,
+  onResolveApproval,
+  onPickRisk,
+  onFinishSetup,
   onInputChange,
   onSubmit,
   onDemo,
@@ -405,11 +688,17 @@ function ChatPanel({
   isSending: boolean;
   messages: Message[];
   actions: Action[];
+  setupStage: "risk" | "approval" | "done";
+  pendingApprovals: PendingApproval[];
+  onResolveApproval: (id: string, action: "approve" | "decline") => void;
+  onPickRisk: (n: number) => void;
+  onFinishSetup: (threshold: number) => void;
   onInputChange: (v: string) => void;
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onDemo: () => void;
   onRecovery: () => void;
 }) {
+  const onboarding = setupStage !== "done";
   const stackRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     stackRef.current?.scrollTo({ top: stackRef.current.scrollHeight, behavior: "smooth" });
@@ -423,9 +712,20 @@ function ChatPanel({
             <div className="msg-avatar">
               {m.role === "assistant" ? <Sparkles size={14} /> : <User size={14} />}
             </div>
-            <div className="bubble">{m.text}</div>
+            <div className="bubble">
+              {m.role === "assistant" ? <FormattedMessage text={m.text} /> : m.text}
+            </div>
           </div>
         ))}
+
+        {onboarding && (
+          <OnboardingCard
+            stage={setupStage}
+            disabled={isSending}
+            onPickRisk={onPickRisk}
+            onFinish={onFinishSetup}
+          />
+        )}
 
         {actions.length > 0 && (
           <div className="actions">
@@ -457,6 +757,43 @@ function ChatPanel({
         )}
       </div>
 
+      {pendingApprovals.length > 0 && (
+        <div className="approvals">
+          {pendingApprovals.map((p) => (
+            <div className="approval" key={p.id}>
+              <div className="approval-icon">
+                <Lock size={15} />
+              </div>
+              <div className="approval-body">
+                <h4>Approval needed · {money.format(p.amount)}</h4>
+                <p>
+                  {p.kind === "transfer"
+                    ? `Send ${money.format(p.amount)}${p.note ? ` for ${p.note}` : ""}`
+                    : `Invest ${money.format(p.amount)}${p.note ? ` (${p.note})` : ""}`}{" "}
+                  — over your approval limit.
+                </p>
+              </div>
+              <div className="approval-actions">
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  onClick={() => onResolveApproval(p.id, "approve")}
+                >
+                  Approve
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  type="button"
+                  onClick={() => onResolveApproval(p.id, "decline")}
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <form className="composer" onSubmit={onSubmit}>
         <input
           aria-label="Message WalletOS"
@@ -469,14 +806,130 @@ function ChatPanel({
         </button>
       </form>
 
-      <div className="suggestions">
-        <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
-          ▶ Try an example: payday plan
-        </button>
-        <button className="chip" type="button" onClick={onRecovery} disabled={isSending}>
-          I need $200 back
+      {!onboarding && (
+        <div className="suggestions">
+          <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
+            ▶ Try an example: payday plan
+          </button>
+          <button className="chip" type="button" onClick={onRecovery} disabled={isSending}>
+            I need $200 back
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const RISK_WORD = ["", "very safe", "very safe", "cautious", "cautious", "balanced", "balanced", "growth-leaning", "growth-leaning", "aggressive", "aggressive"];
+const APPROVAL_PRESETS = [25, 100, 250];
+
+/**
+ * First-run onboarding: pick a risk score (slider 1–10), then an "approve before
+ * moving money" threshold. Both must happen before the user starts chatting.
+ */
+function OnboardingCard({
+  stage,
+  disabled,
+  onPickRisk,
+  onFinish,
+}: {
+  stage: "risk" | "approval" | "done";
+  disabled: boolean;
+  onPickRisk: (n: number) => void;
+  onFinish: (threshold: number) => void;
+}) {
+  const [risk, setRisk] = useState(5);
+  const [threshold, setThreshold] = useState(100);
+
+  if (stage === "approval") {
+    return (
+      <div className="risk-picker">
+        <div className="risk-picker-head">
+          <ShieldCheck size={14} />
+          <span>Approve before moving money</span>
+        </div>
+        <p className="risk-picker-sub">
+          Pick a safety threshold. Moves <strong>at or below</strong> this auto-run from your
+          automations and investments; anything <strong>above</strong> it, I&apos;ll ask you to
+          approve first.
+        </p>
+        <div className="threshold-value">
+          Auto-approve up to <strong>{money.format(threshold)}</strong>
+        </div>
+        <input
+          className="slider"
+          type="range"
+          min={0}
+          max={500}
+          step={25}
+          value={threshold}
+          disabled={disabled}
+          onChange={(e) => setThreshold(Number(e.target.value))}
+        />
+        <div className="risk-scale-labels">
+          <span>Ask about everything</span>
+          <span>$500+</span>
+        </div>
+        <div className="preset-row">
+          {APPROVAL_PRESETS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={`chip ${threshold === p ? "chip-active" : ""}`}
+              disabled={disabled}
+              onClick={() => setThreshold(p)}
+            >
+              Ask above {money.format(p)}
+            </button>
+          ))}
+        </div>
+        <button
+          className="btn btn-primary onboard-cta"
+          type="button"
+          disabled={disabled}
+          onClick={() => onFinish(threshold)}
+        >
+          Finish setup
         </button>
       </div>
+    );
+  }
+
+  return (
+    <div className="risk-picker">
+      <div className="risk-picker-head">
+        <Sparkles size={14} />
+        <span>First, how do you feel about risk?</span>
+      </div>
+      <p className="risk-picker-sub">
+        Slide to where you sit — <strong>1</strong> means play it very safe, <strong>10</strong>{" "}
+        means go for maximum growth. I&apos;ll suggest agents that fit you.
+      </p>
+      <div className="threshold-value">
+        <strong>{risk}</strong> / 10 · {RISK_WORD[risk]}
+      </div>
+      <input
+        className="slider"
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={risk}
+        disabled={disabled}
+        onChange={(e) => setRisk(Number(e.target.value))}
+      />
+      <div className="risk-scale-labels">
+        <span>Safer</span>
+        <span>Riskier</span>
+      </div>
+      <button
+        className="btn btn-primary onboard-cta"
+        type="button"
+        disabled={disabled}
+        onClick={() => onPickRisk(risk)}
+      >
+        Continue
+      </button>
     </div>
   );
 }
@@ -578,7 +1031,7 @@ function AutomationsPanel({
           </div>
           {needs("amount") && (
             <div className="field">
-              <label>Amount (USDC)</label>
+              <label>Amount ($)</label>
               <input
                 type="number"
                 min="0"
@@ -666,12 +1119,14 @@ function AutomationsPanel({
 function MarketplacePanel({
   agents,
   events,
+  investments,
   riskScore,
   available,
   onCreate,
 }: {
   agents: MarketAgent[];
   events: WalletEvent[];
+  investments: AgentInvestment[];
   riskScore: number | null;
   available: number;
   onCreate: (goal: string) => Promise<void>;
@@ -679,6 +1134,8 @@ function MarketplacePanel({
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const agentEvents = events.filter((e) => e.type === "agent_routed");
+  const totalValue = investments.reduce((s, a) => s + a.currentValue, 0);
+  const totalGain = investments.reduce((s, a) => s + a.gain, 0);
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -696,8 +1153,8 @@ function MarketplacePanel({
     <div className="panel">
       <div className="panel-head">
         <div>
-          <h2>Money Helpers</h2>
-          <p className="sub">Specialized helpers that grow your money, matched to your goals.</p>
+          <h2>Financial Agents</h2>
+          <p className="sub">Specialized agents that grow your money, matched to your goals.</p>
         </div>
         <RiskBadge score={riskScore} />
       </div>
@@ -707,7 +1164,7 @@ function MarketplacePanel({
           <input
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
-            placeholder='Describe a goal to create a helper, e.g. "save for a house in 3 years" or "grow my money but keep it safe"'
+            placeholder='Describe a goal to create an agent, e.g. "save for a house in 3 years" or "grow my money but keep it safe"'
           />
           <button className="btn btn-primary" type="submit" disabled={busy}>
             <Plus size={15} />
@@ -736,7 +1193,7 @@ function MarketplacePanel({
                     <span className="tag good">Matched</span>
                   ) : null}
                 </div>
-                <h3>{a.title}</h3>
+                <h3>{agentName(a.title)}</h3>
                 <p className="desc">{a.strategy ?? a.description}</p>
                 <div className="agent-foot">
                   <span>
@@ -765,11 +1222,61 @@ function MarketplacePanel({
               </div>
             );
           })}
-          {agents.length === 0 && <p className="muted">Loading helpers…</p>}
+          {agents.length === 0 && <p className="muted">Loading agents…</p>}
         </div>
 
+        {investments.length > 0 && (
+          <>
+            <div className="divider" />
+            <div className="panel-head" style={{ marginBottom: 8 }}>
+              <p className="section-label">Invested funds</p>
+              <span className="tag good">
+                {money.format(totalValue)}
+                {totalGain > 0 ? ` · +${money.format(totalGain)}` : " working"}
+              </span>
+            </div>
+            <div className="list">
+              {investments.map((inv) => (
+                <div className="row-card" key={inv.agentId}>
+                  <div className="row-icon">
+                    <PiggyBank size={17} />
+                  </div>
+                  <div className="row-main">
+                    <h3>{agentName(inv.title)}</h3>
+                    <p>
+                      Now worth <strong>{money.format(inv.currentValue)}</strong>
+                      {inv.gain > 0 && (
+                        <span className="apy">
+                          {" "}
+                          <TrendingUp size={11} style={{ verticalAlign: "-1px" }} /> +
+                          {money.format(inv.gain)} ({inv.gainPct}%)
+                        </span>
+                      )}
+                    </p>
+                    <p className="sub">
+                      {money.format(inv.invested)} invested
+                      {inv.projectedApy > 0 && <> · ≈{inv.projectedApy}%/yr</>}
+                      {inv.onChainUsdc > 0 && <> · {inv.onChainUsdc} USDC on-chain</>}
+                    </p>
+                  </div>
+                  <div className="row-meta">
+                    {inv.explorerUrl && (
+                      <a className="proof" href={inv.explorerUrl} target="_blank" rel="noreferrer">
+                        wallet <ExternalLink size={11} />
+                      </a>
+                    )}
+                    <span className="when">
+                      {inv.txCount} {inv.txCount === 1 ? "deposit" : "deposits"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         <div className="divider" />
-        <p className="section-label">Helper activity</p>
+        <p className="section-label">Agent activity</p>
         {agentEvents.length === 0 ? (
           <p className="muted" style={{ marginTop: 8 }}>
             Activity will appear here after you put money to work.

@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "setup:wallet": "tsx scripts/setup-wallet.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "faucet": "tsx scripts/faucet.ts"
+    "faucet": "tsx scripts/faucet.ts",
+    "balance": "tsx scripts/balance.ts",
+    "payday": "tsx scripts/payday.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

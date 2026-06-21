@@ -16,8 +16,26 @@
  * buckets.
  */
 
+import { createHash } from "node:crypto";
 import type { BucketId } from "./wallet-types";
 import { listDynamicAgents, type StoredAgent } from "./redis";
+
+/**
+ * Deterministic CDP account name for an agent's wallet.
+ *
+ * CDP account names must be alphanumeric + hyphens, 2–36 chars. Built-in agent
+ * ids stay readable (e.g. `walletos-agent-stable-invest`); user-created ids can be
+ * long, so anything over the limit falls back to a stable hash of the id. The
+ * mapping is deterministic so routing AND balance tracking resolve the same wallet.
+ */
+export function agentAccountName(agentId: string): string {
+  const base = "walletos-agent-";
+  const sanitized = agentId.replace(/_/g, "-").replace(/[^a-zA-Z0-9-]/g, "");
+  const name = `${base}${sanitized}`;
+  if (name.length >= 2 && name.length <= 36) return name;
+  const hash = createHash("sha1").update(agentId).digest("hex").slice(0, 12);
+  return `${base}${hash}`; // 15 + 12 = 27 chars, within limit
+}
 
 export interface MarketplaceAgent {
   id: string;
@@ -123,12 +141,35 @@ export async function allAgents(): Promise<MarketplaceAgent[]> {
   return [...AGENTS, ...dynamic];
 }
 
-export function getAgent(id: string): MarketplaceAgent | undefined {
-  return AGENTS.find((a) => a.id === id);
+/** Normalize an id/name for fuzzy matching: lowercase, alphanumerics only. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-export async function resolveAgent(id: string): Promise<MarketplaceAgent | undefined> {
-  return (await allAgents()).find((a) => a.id === id);
+/**
+ * True if `idOrName` refers to this agent — by raw id, or by normalized id/title,
+ * tolerating a trailing "agent" word (the UI labels agents "Savings Agent" etc.).
+ */
+function agentMatches(a: MarketplaceAgent, idOrName: string): boolean {
+  if (a.id === idOrName) return true;
+  const target = norm(idOrName);
+  const targetNoSuffix = target.replace(/\s*agent$/, "").trim();
+  const cands = [norm(a.id), norm(a.title)];
+  return cands.some((c) => c === target || c === targetNoSuffix);
+}
+
+export function getAgent(idOrName: string): MarketplaceAgent | undefined {
+  return AGENTS.find((a) => agentMatches(a, idOrName));
+}
+
+/**
+ * Resolve an agent by its internal id OR its display name (case/spacing-insensitive,
+ * trailing "agent" optional), across built-ins and user-created agents — so
+ * "Home Fund Keeper", "home fund keeper agent", and the raw id all resolve.
+ */
+export async function resolveAgent(idOrName: string): Promise<MarketplaceAgent | undefined> {
+  const agents = await allAgents();
+  return agents.find((a) => agentMatches(a, idOrName));
 }
 
 /**

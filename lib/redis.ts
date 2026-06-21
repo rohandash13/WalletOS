@@ -6,7 +6,7 @@
  * (The memory store is per-process — fine for `next dev`, not for serverless prod,
  * but the demo is single-process.)
  *
- * Keys (per user, MVP user = "demo"):
+ * Keys (per user; the demo user is "demo", real users are their auth id):
  *   portfolio:<user>   hash   bucket -> usdc balance
  *   tx:<user>          list   newest-first TxRecord JSON
  *   events:<user>      list   AppEvent JSON, id from events:seq:<user>
@@ -25,6 +25,7 @@ import {
   type EventType,
   type Automation,
 } from "./wallet-types";
+import { toDemoUsd, scaleLabel } from "./money";
 
 /* ----------------------------- low-level store ---------------------------- */
 
@@ -140,6 +141,7 @@ const k = {
   eventsSeq: (u: string = USER_ID) => `events:seq:${u}`,
   policy: (u: string = USER_ID) => `policy:${u}`,
   automations: (u: string = USER_ID) => `automations:${u}`,
+  pending: (u: string = USER_ID) => `pending:${u}`,
   agents: () => `agents:dynamic`,
 };
 
@@ -240,6 +242,11 @@ export async function getEventsSince(
 export interface StoredPolicy {
   maxUsdcPerTx?: number;
   allowlist?: string[];
+  /**
+   * "Approve before moving money" threshold (demo dollars). Single money moves at
+   * or below this auto-execute; above it the agent asks the user to confirm first.
+   */
+  approvalThreshold?: number;
 }
 
 export async function getStoredPolicy(userId: string = USER_ID): Promise<StoredPolicy | null> {
@@ -263,15 +270,107 @@ export async function addAutomation(
   await kv.lpush(k.automations(userId), JSON.stringify(a));
 }
 
+export async function listAutomations(
+  limit = 50,
+  userId: string = USER_ID,
+): Promise<Automation[]> {
+  const raw = await kv.lrange(k.automations(userId), 0, limit - 1);
+  return raw.map((r) => JSON.parse(r) as Automation);
+}
+
+/* ------------------------- pending approvals ------------------------------ */
+
+/** A money move deferred on payday because it exceeded the approval threshold. */
+export interface PendingApproval {
+  id: string;
+  kind: "transfer" | "invest";
+  amount: number;
+  to?: string;
+  agentId?: string;
+  riskScore?: number;
+  note?: string;
+  createdAt: number;
+}
+
+export async function listPendingApprovals(userId: string = USER_ID): Promise<PendingApproval[]> {
+  const raw = await kv.get(k.pending(userId));
+  return raw ? (JSON.parse(raw) as PendingApproval[]) : [];
+}
+
+export async function addPendingApproval(
+  p: PendingApproval,
+  userId: string = USER_ID,
+): Promise<void> {
+  const list = await listPendingApprovals(userId);
+  list.push(p);
+  await kv.set(k.pending(userId), JSON.stringify(list));
+}
+
+/** Remove and return a pending approval by id (e.g. once approved or declined). */
+export async function removePendingApproval(
+  id: string,
+  userId: string = USER_ID,
+): Promise<PendingApproval | undefined> {
+  const list = await listPendingApprovals(userId);
+  const found = list.find((p) => p.id === id);
+  await kv.set(k.pending(userId), JSON.stringify(list.filter((p) => p.id !== id)));
+  return found;
+}
+
+/**
+ * Reset the demo ledger to mirror the actual CDP wallet's on-chain balance,
+ * expressed in USD-equivalent using the configured testnet scale (1 USDC = $1,000).
+ * This is the on-chain-mirroring reset path; seedDemoPaycheck is the fixed-amount one.
+ */
+export async function syncLedgerToOnChainBalance(
+  usdcBalance: number,
+  userId: string = USER_ID,
+): Promise<Portfolio> {
+  for (const b of BUCKETS) await setBucket(b, 0, userId);
+  await kv.del(k.tx(userId));
+  await kv.del(k.events(userId));
+  await kv.del(k.eventsSeq(userId));
+  await kv.del(k.automations(userId));
+  await kv.del(k.policy(userId));
+  await kv.del(k.pending(userId));
+
+  const amount = toDemoUsd(usdcBalance);
+  if (amount > 0) await setBucket("available", amount, userId);
+  const portfolio = await getPortfolio(userId);
+
+  const tx: TxRecord = {
+    id: `tx_sync_${Date.now().toString(36)}`,
+    kind: "internal",
+    type: "deposit",
+    amount,
+    token: "usdc",
+    from: "on_chain_wallet",
+    to: "available",
+    toBucket: "available",
+    note: `Synced ledger from wallet balance (${scaleLabel()})`,
+    status: "confirmed",
+    ts: Date.now(),
+  };
+  await addTx(tx, userId);
+  await publishEvent(
+    "portfolio",
+    `Balance refreshed`,
+    { bucket: "available", balance: amount, onChainUsdc: usdcBalance, scale: scaleLabel() },
+    userId,
+  );
+  return portfolio;
+}
+
 /* ------------------------------ demo seed --------------------------------- */
 
 /**
- * Seed the demo "paycheck": credit the Available bucket so the demo-script numbers
- * (e.g. $2,000 deposit) land cleanly. The on-chain wallet still only holds scarce
- * test USDC — buckets are the logical portfolio; real transfers settle what fits.
+ * Seed the demo "paycheck": credit the Available bucket so the demo starts from a
+ * believable opening balance ($5,000). The on-chain wallet still only holds scarce
+ * test USDC — buckets are the logical portfolio; real transfers settle the scaled
+ * amount. Payday (/api/payday) is the separate recurring +$2,000 income.
  */
 export async function seedDemoPaycheck(
-  amount = 2000,
+  amount = 5000,
   reset = false,
   userId: string = USER_ID,
 ): Promise<Portfolio> {
@@ -283,6 +382,7 @@ export async function seedDemoPaycheck(
     await kv.del(k.eventsSeq(userId));
     await kv.del(k.automations(userId));
     await kv.del(k.policy(userId));
+    await kv.del(k.pending(userId));
   }
   await adjustBucket("available", amount, userId);
   const portfolio = await getPortfolio(userId);
@@ -304,21 +404,10 @@ export async function seedDemoPaycheck(
   await publishEvent(
     "portfolio",
     `Paycheck deposit: +${amount} USDC to Available`,
-    {
-      bucket: "available",
-      delta: amount,
-    },
+    { bucket: "available", delta: amount },
     userId,
   );
   return portfolio;
-}
-
-export async function listAutomations(
-  limit = 50,
-  userId: string = USER_ID,
-): Promise<Automation[]> {
-  const raw = await kv.lrange(k.automations(userId), 0, limit - 1);
-  return raw.map((r) => JSON.parse(r) as Automation);
 }
 
 /* --------------------- dynamic (user-created) agents ---------------------- */
