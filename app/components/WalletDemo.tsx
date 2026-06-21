@@ -82,6 +82,12 @@ const money = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+/** Display an agent's name with an explicit "Agent" suffix (no double "Agent"). */
+function agentName(title: string): string {
+  const t = title.trim();
+  return /agent$/i.test(t) ? t : `${t} Agent`;
+}
+
 function actionLabel(a: Action) {
   if (a.type === "send_payment") return "Payment sent";
   if (a.type === "route_to_agent") return "Money invested";
@@ -820,8 +826,8 @@ function MarketplacePanel({
     <div className="panel">
       <div className="panel-head">
         <div>
-          <h2>Money Helpers</h2>
-          <p className="sub">Specialized helpers that grow your money, matched to your goals.</p>
+          <h2>Financial Agents</h2>
+          <p className="sub">Specialized agents that grow your money, matched to your goals.</p>
         </div>
         <RiskBadge score={riskScore} />
       </div>
@@ -831,7 +837,7 @@ function MarketplacePanel({
           <input
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
-            placeholder='Describe a goal to create a helper, e.g. "save for a house in 3 years" or "grow my money but keep it safe"'
+            placeholder='Describe a goal to create an agent, e.g. "save for a house in 3 years" or "grow my money but keep it safe"'
           />
           <button className="btn btn-primary" type="submit" disabled={busy}>
             <Plus size={15} />
@@ -860,7 +866,7 @@ function MarketplacePanel({
                     <span className="tag good">Matched</span>
                   ) : null}
                 </div>
-                <h3>{a.title}</h3>
+                <h3>{agentName(a.title)}</h3>
                 <p className="desc">{a.strategy ?? a.description}</p>
                 <div className="agent-foot">
                   <span>
@@ -889,7 +895,7 @@ function MarketplacePanel({
               </div>
             );
           })}
-          {agents.length === 0 && <p className="muted">Loading helpers…</p>}
+          {agents.length === 0 && <p className="muted">Loading agents…</p>}
         </div>
 
         {investments.length > 0 && (
@@ -909,7 +915,7 @@ function MarketplacePanel({
                     <PiggyBank size={17} />
                   </div>
                   <div className="row-main">
-                    <h3>{inv.title}</h3>
+                    <h3>{agentName(inv.title)}</h3>
                     <p>
                       Now worth <strong>{money.format(inv.currentValue)}</strong>
                       {inv.gain > 0 && (
@@ -943,7 +949,7 @@ function MarketplacePanel({
         )}
 
         <div className="divider" />
-        <p className="section-label">Helper activity</p>
+        <p className="section-label">Agent activity</p>
         {agentEvents.length === 0 ? (
           <p className="muted" style={{ marginTop: 8 }}>
             Activity will appear here after you put money to work.

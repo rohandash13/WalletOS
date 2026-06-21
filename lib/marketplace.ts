@@ -146,26 +146,30 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-export function getAgent(idOrName: string): MarketplaceAgent | undefined {
+/**
+ * True if `idOrName` refers to this agent — by raw id, or by normalized id/title,
+ * tolerating a trailing "agent" word (the UI labels agents "Savings Agent" etc.).
+ */
+function agentMatches(a: MarketplaceAgent, idOrName: string): boolean {
+  if (a.id === idOrName) return true;
   const target = norm(idOrName);
-  return (
-    AGENTS.find((a) => a.id === idOrName) ??
-    AGENTS.find((a) => norm(a.id) === target || norm(a.title) === target)
-  );
+  const targetNoSuffix = target.replace(/\s*agent$/, "").trim();
+  const cands = [norm(a.id), norm(a.title)];
+  return cands.some((c) => c === target || c === targetNoSuffix);
+}
+
+export function getAgent(idOrName: string): MarketplaceAgent | undefined {
+  return AGENTS.find((a) => agentMatches(a, idOrName));
 }
 
 /**
- * Resolve an agent by its internal id OR its display name (case/spacing-insensitive),
- * across built-ins and user-created agents — so "Home Fund Keeper", "home fund keeper",
- * and the raw id all resolve to the same agent.
+ * Resolve an agent by its internal id OR its display name (case/spacing-insensitive,
+ * trailing "agent" optional), across built-ins and user-created agents — so
+ * "Home Fund Keeper", "home fund keeper agent", and the raw id all resolve.
  */
 export async function resolveAgent(idOrName: string): Promise<MarketplaceAgent | undefined> {
-  const target = norm(idOrName);
   const agents = await allAgents();
-  return (
-    agents.find((a) => a.id === idOrName) ??
-    agents.find((a) => norm(a.id) === target || norm(a.title) === target)
-  );
+  return agents.find((a) => agentMatches(a, idOrName));
 }
 
 /**

@@ -143,6 +143,8 @@ async function main() {
   eq2("'balanced growth' -> balanced_growth", (await resolveAgent("balanced growth"))?.id ?? "?", "balanced_growth");
   eq2("'High-Yield' -> high_yield", (await resolveAgent("High-Yield"))?.id ?? "?", "high_yield");
   eq2("raw id still resolves", (await resolveAgent("savings"))?.id ?? "?", "savings");
+  eq2("'Savings Agent' (UI label) -> savings", (await resolveAgent("Savings Agent"))?.id ?? "?", "savings");
+  eq2("'balanced growth agent' -> balanced_growth", (await resolveAgent("balanced growth agent"))?.id ?? "?", "balanced_growth");
 
   /* -------------------------------------------------------------- summary --- */
   console.log(
