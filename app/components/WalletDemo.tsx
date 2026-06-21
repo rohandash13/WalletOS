@@ -241,7 +241,6 @@ export function WalletDemo({
   const [isSending, setIsSending] = useState(false);
   const [isPaydayRunning, setIsPaydayRunning] = useState(false);
   const refreshInFlight = useRef(false);
-  const seedAttempted = useRef(false);
 
   const total = useMemo(() => buckets.reduce((s, b) => s + b.balance, 0), [buckets]);
   const available = useMemo(
@@ -282,29 +281,8 @@ export function WalletDemo({
         }),
       ]);
       if (bal.ok) {
-        let balance = (await bal.json()) as BalanceResponse;
-        const totalBalance = balance.buckets.reduce((sum, bucket) => sum + bucket.balance, 0);
-        if (totalBalance === 0 && !seedAttempted.current) {
-          seedAttempted.current = true;
-          const seeded = await fetch("/api/demo/seed", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authHeaders },
-            body: JSON.stringify({ amount: 5000, reset: true }),
-            signal: controller.signal,
-          });
-          if (seeded.ok) {
-            balance = {
-              ...balance,
-              walletBalance: 5000,
-              buckets: [
-                { name: "Available", key: "checking", balance: 5000, protected: false },
-                { name: "Savings", key: "savings", balance: 0, protected: false },
-                { name: "Protected", key: "rent_safe", balance: 0, protected: true },
-                { name: "Invested", key: "stable_invest", balance: 0, protected: false },
-              ],
-            };
-          }
-        }
+        // Reflect the real on-chain balance — never fake-seed an empty wallet.
+        const balance = (await bal.json()) as BalanceResponse;
         setBuckets(balance.buckets);
       }
       if (ev.ok) setEvents(((await ev.json()) as { events: WalletEvent[] }).events);
@@ -421,6 +399,7 @@ export function WalletDemo({
       setEvents(body.events ?? events);
       setAutomations(body.automations ?? automations);
       setRiskScore((prev) => body.riskScore ?? prev);
+      setApprovalThreshold((prev) => body.approvalThreshold ?? prev);
       setWhy(body.why ?? why);
     } catch {
       setMessages((c) => [
@@ -451,7 +430,7 @@ export function WalletDemo({
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ approvalThreshold: threshold }),
+        body: JSON.stringify({ approvalThreshold: threshold, riskScore }),
       });
     } catch {
       /* setting is best-effort; agent still works without it */
@@ -806,9 +785,14 @@ function ChatPanel({
           aria-label="Message WalletOS"
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
-          placeholder="Ask WalletOS to move, save, protect, or grow your money…"
+          disabled={isSending || onboarding}
+          placeholder={
+            onboarding
+              ? "Set your risk score and approval limit above to start…"
+              : "Ask WalletOS to move, save, protect, or grow your money…"
+          }
         />
-        <button className="send" type="submit" disabled={isSending}>
+        <button className="send" type="submit" disabled={isSending || onboarding}>
           <Send size={16} />
         </button>
       </form>

@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runAgent } from "@/lib/agent";
 import { toChatResponse } from "@/lib/adapter";
+import { getStoredPolicy } from "@/lib/redis";
 import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -24,9 +25,21 @@ export async function POST(req: NextRequest) {
     if (!message.trim()) {
       return NextResponse.json({ error: "A message is required." }, { status: 400 });
     }
+
+    // Onboarding gate: no chatting (and no assumed spending limit) until the user
+    // has set an approval threshold. The frontend also disables the composer until
+    // onboarding is done; this enforces it on the server too.
+    const policy = await getStoredPolicy(session.userId);
+    if (policy?.approvalThreshold == null) {
+      return NextResponse.json(
+        { error: "Complete onboarding (risk score and approval limit) before chatting." },
+        { status: 400 },
+      );
+    }
+
     const fast = body?.fast === true;
     const turn = await runAgent(message, session.userId, { fast });
-    return NextResponse.json(await toChatResponse(turn, session.userId));
+    return NextResponse.json(await toChatResponse(turn, session.userId, message));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
