@@ -6,7 +6,7 @@
  * (The memory store is per-process — fine for `next dev`, not for serverless prod,
  * but the demo is single-process.)
  *
- * Keys (per user, MVP user = "demo"):
+ * Keys (per user; the demo user is "demo", real users are their auth id):
  *   portfolio:<user>   hash   bucket -> usdc balance
  *   tx:<user>          list   newest-first TxRecord JSON
  *   events:<user>      list   AppEvent JSON, id from events:seq:<user>
@@ -25,7 +25,6 @@ import {
   type EventType,
   type Automation,
 } from "./wallet-types";
-import { toDemoUsd, scaleLabel } from "./money";
 
 /* ----------------------------- low-level store ---------------------------- */
 
@@ -135,13 +134,12 @@ export const redisBackend = store.backend;
 /* -------------------------------- keys ------------------------------------ */
 
 const k = {
-  portfolio: (u = USER_ID) => `portfolio:${u}`,
-  tx: (u = USER_ID) => `tx:${u}`,
-  events: (u = USER_ID) => `events:${u}`,
-  eventsSeq: (u = USER_ID) => `events:seq:${u}`,
-  policy: (u = USER_ID) => `policy:${u}`,
-  preferences: (u = USER_ID) => `preferences:${u}`,
-  automations: (u = USER_ID) => `automations:${u}`,
+  portfolio: (u: string = USER_ID) => `portfolio:${u}`,
+  tx: (u: string = USER_ID) => `tx:${u}`,
+  events: (u: string = USER_ID) => `events:${u}`,
+  eventsSeq: (u: string = USER_ID) => `events:seq:${u}`,
+  policy: (u: string = USER_ID) => `policy:${u}`,
+  automations: (u: string = USER_ID) => `automations:${u}`,
   agents: () => `agents:dynamic`,
 };
 
@@ -154,8 +152,8 @@ const EMPTY_PORTFOLIO: Portfolio = {
   stable_invest: 0,
 };
 
-export async function getPortfolio(): Promise<Portfolio> {
-  const raw = (await kv.hgetall(k.portfolio())) ?? {};
+export async function getPortfolio(userId: string = USER_ID): Promise<Portfolio> {
+  const raw = (await kv.hgetall(k.portfolio(userId))) ?? {};
   const out = { ...EMPTY_PORTFOLIO };
   for (const b of BUCKETS) {
     const v = raw[b];
@@ -164,15 +162,23 @@ export async function getPortfolio(): Promise<Portfolio> {
   return out;
 }
 
-export async function setBucket(bucket: BucketId, amount: number): Promise<void> {
-  await kv.hset(k.portfolio(), bucket, String(amount));
+export async function setBucket(
+  bucket: BucketId,
+  amount: number,
+  userId: string = USER_ID,
+): Promise<void> {
+  await kv.hset(k.portfolio(userId), bucket, String(amount));
 }
 
 /** Add (or subtract, if negative) to a bucket. Returns the new balance. */
-export async function adjustBucket(bucket: BucketId, delta: number): Promise<number> {
-  const p = await getPortfolio();
+export async function adjustBucket(
+  bucket: BucketId,
+  delta: number,
+  userId: string = USER_ID,
+): Promise<number> {
+  const p = await getPortfolio(userId);
   const next = Math.round((p[bucket] + delta) * 1e6) / 1e6;
-  await setBucket(bucket, next);
+  await setBucket(bucket, next, userId);
   return next;
 }
 
@@ -181,29 +187,20 @@ export async function moveBetweenBuckets(
   from: BucketId,
   to: BucketId,
   amount: number,
+  userId: string = USER_ID,
 ): Promise<void> {
-  await adjustBucket(from, -amount);
-  await adjustBucket(to, amount);
-}
-
-async function clearDemoState(): Promise<void> {
-  for (const b of BUCKETS) await setBucket(b, 0);
-  await kv.del(k.tx());
-  await kv.del(k.events());
-  await kv.del(k.eventsSeq());
-  await kv.del(k.automations());
-  await kv.del(k.policy());
-  await kv.del(k.preferences());
+  await adjustBucket(from, -amount, userId);
+  await adjustBucket(to, amount, userId);
 }
 
 /* ---------------------------------- tx ------------------------------------ */
 
-export async function addTx(tx: TxRecord): Promise<void> {
-  await kv.lpush(k.tx(), JSON.stringify(tx));
+export async function addTx(tx: TxRecord, userId: string = USER_ID): Promise<void> {
+  await kv.lpush(k.tx(userId), JSON.stringify(tx));
 }
 
-export async function listTxs(limit = 50): Promise<TxRecord[]> {
-  const raw = await kv.lrange(k.tx(), 0, limit - 1);
+export async function listTxs(limit = 50, userId: string = USER_ID): Promise<TxRecord[]> {
+  const raw = await kv.lrange(k.tx(userId), 0, limit - 1);
   return raw.map((r) => JSON.parse(r) as TxRecord);
 }
 
@@ -213,22 +210,27 @@ export async function publishEvent(
   type: EventType,
   summary: string,
   data?: unknown,
+  userId: string = USER_ID,
 ): Promise<AppEvent> {
-  const id = await kv.incr(k.eventsSeq());
+  const id = await kv.incr(k.eventsSeq(userId));
   const event: AppEvent = { id, type, ts: Date.now(), summary, data };
-  await kv.lpush(k.events(), JSON.stringify(event));
+  await kv.lpush(k.events(userId), JSON.stringify(event));
   return event;
 }
 
 /** Current event sequence value (id of the most recent event, 0 if none). */
-export async function getEventCursor(): Promise<number> {
-  const v = await kv.get(k.eventsSeq());
+export async function getEventCursor(userId: string = USER_ID): Promise<number> {
+  const v = await kv.get(k.eventsSeq(userId));
   return v ? Number(v) : 0;
 }
 
 /** Return events with id > sinceId, oldest-first, for incremental polling/SSE. */
-export async function getEventsSince(sinceId = 0, limit = 100): Promise<AppEvent[]> {
-  const raw = await kv.lrange(k.events(), 0, limit - 1);
+export async function getEventsSince(
+  sinceId = 0,
+  limit = 100,
+  userId: string = USER_ID,
+): Promise<AppEvent[]> {
+  const raw = await kv.lrange(k.events(userId), 0, limit - 1);
   const events = raw.map((r) => JSON.parse(r) as AppEvent);
   return events.filter((e) => e.id > sinceId).sort((a, b) => a.id - b.id);
 }
@@ -240,48 +242,59 @@ export interface StoredPolicy {
   allowlist?: string[];
 }
 
-export async function getStoredPolicy(): Promise<StoredPolicy | null> {
-  const raw = await kv.get(k.policy());
+export async function getStoredPolicy(userId: string = USER_ID): Promise<StoredPolicy | null> {
+  const raw = await kv.get(k.policy(userId));
   return raw ? (JSON.parse(raw) as StoredPolicy) : null;
 }
 
-export async function setStoredPolicy(policy: StoredPolicy): Promise<void> {
-  await kv.set(k.policy(), JSON.stringify(policy));
-}
-
-export interface StoredPreferences {
-  riskScore?: number;
-}
-
-export async function getStoredPreferences(): Promise<StoredPreferences> {
-  const raw = await kv.get(k.preferences());
-  return raw ? (JSON.parse(raw) as StoredPreferences) : {};
-}
-
-export async function setStoredPreferences(prefs: StoredPreferences): Promise<void> {
-  const current = await getStoredPreferences();
-  await kv.set(k.preferences(), JSON.stringify({ ...current, ...prefs }));
+export async function setStoredPolicy(
+  policy: StoredPolicy,
+  userId: string = USER_ID,
+): Promise<void> {
+  await kv.set(k.policy(userId), JSON.stringify(policy));
 }
 
 /* ----------------------------- automations -------------------------------- */
 
-export async function addAutomation(a: Automation): Promise<void> {
-  await kv.lpush(k.automations(), JSON.stringify(a));
+export async function addAutomation(
+  a: Automation,
+  userId: string = USER_ID,
+): Promise<void> {
+  await kv.lpush(k.automations(userId), JSON.stringify(a));
+}
+
+export async function listAutomations(
+  limit = 50,
+  userId: string = USER_ID,
+): Promise<Automation[]> {
+  const raw = await kv.lrange(k.automations(userId), 0, limit - 1);
+  return raw.map((r) => JSON.parse(r) as Automation);
 }
 
 /* ------------------------------ demo seed --------------------------------- */
 
 /**
- * Seed the "paycheck": credit the Available bucket so the script numbers
- * (e.g. $2,000 deposit) land cleanly. The on-chain wallet still only holds scarce
- * test USDC — buckets are the logical portfolio; real transfers settle what fits.
+ * Seed the demo "paycheck": credit the Available bucket so the demo starts from a
+ * believable opening balance ($5,000). The on-chain wallet still only holds scarce
+ * test USDC — buckets are the logical portfolio; real transfers settle the scaled
+ * amount. Payday (/api/payday) is the separate recurring +$2,000 income.
  */
-export async function seedDemoPaycheck(amount = 5000, reset = false): Promise<Portfolio> {
+export async function seedDemoPaycheck(
+  amount = 5000,
+  reset = false,
+  userId: string = USER_ID,
+): Promise<Portfolio> {
   if (reset) {
-    await clearDemoState();
+    for (const b of BUCKETS) await setBucket(b, 0, userId);
+    // Full demo restart: clear the tx log, event stream, automations, and policy.
+    await kv.del(k.tx(userId));
+    await kv.del(k.events(userId));
+    await kv.del(k.eventsSeq(userId));
+    await kv.del(k.automations(userId));
+    await kv.del(k.policy(userId));
   }
-  await adjustBucket("available", amount);
-  const portfolio = await getPortfolio();
+  await adjustBucket("available", amount, userId);
+  const portfolio = await getPortfolio(userId);
 
   const tx: TxRecord = {
     id: `tx_seed_${Date.now().toString(36)}`,
@@ -292,56 +305,18 @@ export async function seedDemoPaycheck(amount = 5000, reset = false): Promise<Po
     from: "paycheck",
     to: "available",
     toBucket: "available",
-    note: "Paycheck deposit",
+    note: "Simulated paycheck deposit",
     status: "confirmed",
     ts: Date.now(),
   };
-  await addTx(tx);
-  await publishEvent("portfolio", `Paycheck deposit: +${amount} USDC to Available`, {
-    bucket: "available",
-    delta: amount,
-  });
+  await addTx(tx, userId);
+  await publishEvent(
+    "portfolio",
+    `Paycheck deposit: +${amount} USDC to Available`,
+    { bucket: "available", delta: amount },
+    userId,
+  );
   return portfolio;
-}
-
-/**
- * Reset the demo ledger to the actual CDP wallet's on-chain balance, expressed in
- * USD-equivalent balance using the configured testnet scale.
- */
-export async function syncLedgerToOnChainBalance(usdcBalance: number): Promise<Portfolio> {
-  await clearDemoState();
-  const amount = toDemoUsd(usdcBalance);
-  if (amount > 0) {
-    await setBucket("available", amount);
-  }
-  const portfolio = await getPortfolio();
-
-  const tx: TxRecord = {
-    id: `tx_sync_${Date.now().toString(36)}`,
-    kind: "internal",
-    type: "deposit",
-    amount,
-    token: "usdc",
-    from: "on_chain_wallet",
-    to: "available",
-    toBucket: "available",
-    note: `Synced ledger from wallet balance (${scaleLabel()})`,
-    status: "confirmed",
-    ts: Date.now(),
-  };
-  await addTx(tx);
-  await publishEvent("portfolio", `Balance refreshed`, {
-    bucket: "available",
-    balance: amount,
-    onChainUsdc: usdcBalance,
-    scale: scaleLabel(),
-  });
-  return portfolio;
-}
-
-export async function listAutomations(limit = 50): Promise<Automation[]> {
-  const raw = await kv.lrange(k.automations(), 0, limit - 1);
-  return raw.map((r) => JSON.parse(r) as Automation);
 }
 
 /* --------------------- dynamic (user-created) agents ---------------------- */

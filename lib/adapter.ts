@@ -1,14 +1,14 @@
 /**
  * lib/adapter.ts — maps the REAL backend's internal shapes onto the frontend's
- * JSON contract (lib/types.ts), so Person B's UI runs unchanged on the real
+ * JSON contract (lib/types.ts), so the UI runs unchanged on the real
  * Claude + CDP + Fetch backend.
  *
  * Bucket reconciliation: the backend ledger uses `available/rent/savings/
  * stable_invest`; the UI renders each bucket separately.
- *   available     -> checking
- *   savings       -> savings
- *   rent          -> rent_safe
- *   stable_invest -> stable_invest
+ *   available     -> checking (Available)
+ *   savings       -> savings  (Savings; funded by auto-save rules)
+ *   rent          -> rent_safe (Protected)
+ *   stable_invest -> stable_invest (Invested)
  */
 
 import type {
@@ -17,6 +17,7 @@ import type {
   Automation as LedgerAutomation,
   EventType,
 } from "./wallet-types";
+import { USER_ID } from "./wallet-types";
 import type {
   Portfolio as UiPortfolio,
   Bucket,
@@ -27,13 +28,7 @@ import type {
   BalanceResponse,
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
-import {
-  getPortfolio,
-  getEventsSince,
-  listAutomations,
-  getStoredPreferences,
-  setStoredPreferences,
-} from "./redis";
+import { getPortfolio, getEventsSince, listAutomations } from "./redis";
 import { getBalanceSnapshot, automationLabel } from "./tools";
 
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
@@ -72,16 +67,14 @@ export function toBuckets(p: LedgerPortfolio): Bucket[] {
 
 type Snapshot = Awaited<ReturnType<typeof getBalanceSnapshot>>;
 
-export async function toBalanceResponse(snap: Snapshot): Promise<BalanceResponse> {
+export function toBalanceResponse(snap: Snapshot): BalanceResponse {
   const buckets = toBuckets(snap.portfolio);
-  const prefs = await getStoredPreferences();
   return {
     walletAddress: snap.address,
     network: "base-sepolia",
     asset: "USD",
     walletBalance: round(buckets.reduce((sum, b) => sum + b.balance, 0)),
     buckets,
-    riskScore: prefs.riskScore,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -112,18 +105,7 @@ export function toWalletEvent(e: AppEvent): WalletEvent {
 
 /** Newest-first, for the "Live activity" feed. */
 export function toWalletEvents(events: AppEvent[]): WalletEvent[] {
-  return [...events]
-    .filter((e) => {
-      const data = asRecord(e.data);
-      const isBalanceSync =
-        e.type === "portfolio" &&
-        (e.summary === "Balance refreshed" ||
-          e.summary.toLowerCase().startsWith("synced ")) &&
-        data.onChainUsdc != null;
-      return !isBalanceSync;
-    })
-    .sort((a, b) => b.id - a.id)
-    .map(toWalletEvent);
+  return [...events].sort((a, b) => b.id - a.id).map(toWalletEvent);
 }
 
 /* ------------------------------ automations ------------------------------- */
@@ -210,28 +192,6 @@ function extractRisk(toolCalls: AgentToolCall[]): number | undefined {
   return undefined;
 }
 
-function normalizeRisk(n: number): number | undefined {
-  if (!Number.isFinite(n)) return undefined;
-  return Math.max(1, Math.min(10, Math.round(n)));
-}
-
-export function extractRiskFromText(text: string): number | undefined {
-  const patterns = [
-    /(?:risk|comfort)[^\d]{0,20}(\d{1,2})(?:\s*(?:\/|out of)\s*10)?/i,
-    /(\d{1,2})\s*(?:\/|out of)\s*10\s*(?:on\s*)?risk/i,
-    /i['’]?\s*m\s*a\s*(\d{1,2})\s*(?:\/|out of)\s*10/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    const score = match ? normalizeRisk(Number(match[1])) : undefined;
-    if (score != null) return score;
-  }
-  if (/\blow[-\s]?risk\b|\bconservative\b/i.test(text)) return 3;
-  if (/\bmedium[-\s]?risk\b|\bmoderate\b|\bbalanced\b/i.test(text)) return 5;
-  if (/\bhigh[-\s]?risk\b|\baggressive\b/i.test(text)) return 8;
-  return undefined;
-}
-
 function extractWhy(toolCalls: AgentToolCall[]): string | undefined {
   // Last explain_decision summary wins.
   for (let i = toolCalls.length - 1; i >= 0; i--) {
@@ -245,17 +205,14 @@ function extractWhy(toolCalls: AgentToolCall[]): string | undefined {
 
 /* ---------------------------------- chat ---------------------------------- */
 
-export async function toChatResponse(turn: AgentTurn, userText?: string): Promise<ChatResponse> {
-  const textRisk = userText ? extractRiskFromText(userText) : undefined;
-  const toolRisk = extractRisk(turn.toolCalls);
-  const parsedRisk = toolRisk ?? textRisk;
-  if (parsedRisk != null) await setStoredPreferences({ riskScore: parsedRisk });
-
-  const [portfolio, events, autos, prefs] = await Promise.all([
-    getPortfolio(),
-    getEventsSince(0),
-    listAutomations(),
-    getStoredPreferences(),
+export async function toChatResponse(
+  turn: AgentTurn,
+  userId: string = USER_ID,
+): Promise<ChatResponse> {
+  const [portfolio, events, autos] = await Promise.all([
+    getPortfolio(userId),
+    getEventsSince(0, 100, userId),
+    listAutomations(50, userId),
   ]);
   return {
     assistantMessage: turn.reply,
@@ -264,7 +221,7 @@ export async function toChatResponse(turn: AgentTurn, userText?: string): Promis
     buckets: toBuckets(portfolio),
     events: toWalletEvents(events),
     automations: autos.map(toUiAutomation),
-    riskScore: parsedRisk ?? prefs.riskScore,
+    riskScore: extractRisk(turn.toolCalls),
     why: extractWhy(turn.toolCalls) ?? turn.reply,
   };
 }

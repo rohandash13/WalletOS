@@ -8,13 +8,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { listAutomations } from "@/lib/redis";
 import { executeTool } from "@/lib/tools";
 import { toUiAutomation } from "@/lib/adapter";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const autos = await listAutomations();
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
+    const autos = await listAutomations(50, session.userId);
     return NextResponse.json({ automations: autos.map(toUiAutomation) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -24,8 +28,13 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
     const body = await req.json().catch(() => ({}));
-    const outcome = await executeTool("create_automation", body ?? {});
+    const outcome = await executeTool("create_automation", body ?? {}, {
+      userId: session.userId,
+    });
     if (!outcome.ok) {
       return NextResponse.json(outcome.result, { status: 400 });
     }

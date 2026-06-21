@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
+    "@clerk/nextjs": "^7.5.7",
     "@coinbase/cdp-sdk": "^1.51.2",
     "@upstash/redis": "^1.38.0",
     "dotenv": "^17.4.2",

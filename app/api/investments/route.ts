@@ -6,13 +6,17 @@
  */
 import { NextResponse } from "next/server";
 import { getInvestments } from "@/lib/investments";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return NextResponse.json(await getInvestments());
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
+    return NextResponse.json(await getInvestments(session.userId));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });

@@ -55,18 +55,21 @@ export interface AgentTurn {
 // In-process conversation history (single-user demo). Survives within a process.
 const histories = new Map<string, Anthropic.MessageParam[]>();
 
-export function resetConversation(userId = USER_ID): void {
+export function resetConversation(userId: string = USER_ID): void {
   histories.delete(userId);
 }
 
-export async function runAgent(userText: string, userId = USER_ID): Promise<AgentTurn> {
-  await hydratePolicy();
+export async function runAgent(
+  userText: string,
+  userId: string = USER_ID,
+): Promise<AgentTurn> {
+  await hydratePolicy(userId);
   const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 
   const history = histories.get(userId) ?? [];
   history.push({ role: "user", content: userText });
 
-  const cursor = await getEventCursor();
+  const cursor = await getEventCursor(userId);
   const toolCalls: AgentToolCall[] = [];
   let reply = "";
 
@@ -99,6 +102,7 @@ export async function runAgent(userText: string, userId = USER_ID): Promise<Agen
       const outcome = await executeTool(
         block.name,
         block.input as Record<string, unknown>,
+        { userId },
       );
       toolCalls.push({
         name: block.name,
@@ -117,6 +121,6 @@ export async function runAgent(userText: string, userId = USER_ID): Promise<Agen
   }
 
   histories.set(userId, history);
-  const events = await getEventsSince(cursor);
+  const events = await getEventsSince(cursor, 100, userId);
   return { reply, toolCalls, events };
 }

@@ -12,6 +12,7 @@ import { listTxs } from "./redis";
 import { getWallet } from "./wallet";
 import { toDemoUsd, scaleLabel } from "./money";
 import { allAgents, agentAccountName, previewApy } from "./marketplace";
+import { USER_ID } from "./wallet-types";
 
 export interface AgentInvestment {
   agentId: string;
@@ -43,8 +44,8 @@ export interface InvestmentsSnapshot {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-export async function getInvestments(): Promise<InvestmentsSnapshot> {
-  const txs = await listTxs(500);
+export async function getInvestments(userId: string = USER_ID): Promise<InvestmentsSnapshot> {
+  const txs = await listTxs(500, userId);
   const routes = txs.filter((t) => t.type === "route_to_agent");
 
   // Aggregate principal per agent (fall back to the destination address for

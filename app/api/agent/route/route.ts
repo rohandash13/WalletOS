@@ -5,14 +5,20 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { executeTool } from "@/lib/tools";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
     const body = await req.json();
-    const outcome = await executeTool("route_to_agent", body ?? {});
+    const outcome = await executeTool("route_to_agent", body ?? {}, {
+      userId: session.userId,
+    });
     if (!outcome.ok) {
       return NextResponse.json(outcome.result, { status: 400 });
     }
