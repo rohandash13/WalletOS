@@ -1,5 +1,6 @@
 "use client";
 
+import { SignOutButton } from "@clerk/nextjs";
 import {
   ArrowLeftRight,
   Bot,
@@ -33,6 +34,7 @@ import type {
   ChatResponse,
   WalletEvent,
 } from "@/lib/types";
+import type { AuthUser, WalletOSProfile } from "@/lib/profiles";
 
 type Tab = "chat" | "automations" | "marketplace";
 type Message = { id: string; role: "user" | "assistant"; text: string };
@@ -49,8 +51,6 @@ type MarketAgent = {
   projectedApy?: number;
   online: boolean;
 };
-
-const DEMO_USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID ?? "demo-user";
 
 const PRIMARY_PROMPT =
   "I get paid $2k on the 1st. Send my sister $50 every month, keep rent safe, and invest the rest low-risk - I'm a 3 out of 10 on risk.";
@@ -104,7 +104,13 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-export function WalletDemo() {
+export function WalletDemo({
+  authUser,
+  profile,
+}: {
+  authUser: AuthUser;
+  profile: WalletOSProfile;
+}) {
   const [tab, setTab] = useState<Tab>("chat");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
@@ -115,44 +121,96 @@ export function WalletDemo() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [agents, setAgents] = useState<MarketAgent[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
-  const [riskScore, setRiskScore] = useState<number | null>(null);
+  const [riskScore, setRiskScore] = useState<number | null>(profile.riskScore);
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const refreshInFlight = useRef(false);
+  const seedAttempted = useRef(false);
 
   const total = useMemo(() => buckets.reduce((s, b) => s + b.balance, 0), [buckets]);
   const available = useMemo(
     () => buckets.find((b) => b.key === "checking")?.balance ?? 0,
     [buckets],
   );
+  const authHeaders = useMemo(
+    () => ({ "x-walletos-user-id": authUser.userId }),
+    [authUser.userId],
+  );
 
   const refreshLiveData = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 5000);
     try {
       const [bal, ev, au] = await Promise.all([
-        fetch(`/api/balance?userId=${DEMO_USER_ID}`, { cache: "no-store" }),
-        fetch(`/api/events?userId=${DEMO_USER_ID}`, { cache: "no-store" }),
-        fetch(`/api/automations?userId=${DEMO_USER_ID}`, { cache: "no-store" }),
+        fetch(`/api/balance?userId=${authUser.userId}`, {
+          cache: "no-store",
+          headers: authHeaders,
+          signal: controller.signal,
+        }),
+        fetch(`/api/events?userId=${authUser.userId}`, {
+          cache: "no-store",
+          headers: authHeaders,
+          signal: controller.signal,
+        }),
+        fetch(`/api/automations?userId=${authUser.userId}`, {
+          cache: "no-store",
+          headers: authHeaders,
+          signal: controller.signal,
+        }),
       ]);
-      if (bal.ok) setBuckets(((await bal.json()) as BalanceResponse).buckets);
+      if (bal.ok) {
+        let balance = (await bal.json()) as BalanceResponse;
+        const totalBalance = balance.buckets.reduce((sum, bucket) => sum + bucket.balance, 0);
+        if (totalBalance === 0 && !seedAttempted.current) {
+          seedAttempted.current = true;
+          const seeded = await fetch("/api/demo/seed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders },
+            body: JSON.stringify({ amount: 2000, reset: true }),
+            signal: controller.signal,
+          });
+          if (seeded.ok) {
+            balance = {
+              ...balance,
+              walletBalance: 2000,
+              buckets: [
+                { name: "Available", key: "checking", balance: 2000, protected: false },
+                { name: "Protected", key: "rent_safe", balance: 0, protected: true },
+                { name: "Invested", key: "stable_invest", balance: 0, protected: false },
+              ],
+            };
+          }
+        }
+        setBuckets(balance.buckets);
+      }
       if (ev.ok) setEvents(((await ev.json()) as { events: WalletEvent[] }).events);
       if (au.ok)
         setAutomations(((await au.json()) as { automations: Automation[] }).automations);
     } catch {
       /* keep last state */
+    } finally {
+      window.clearTimeout(timer);
+      refreshInFlight.current = false;
     }
-  }, []);
+  }, [authHeaders, authUser.userId]);
 
   const fetchAgents = useCallback(async () => {
     try {
-      const res = await fetch("/api/marketplace", { cache: "no-store" });
+      const res = await fetch("/api/marketplace", {
+        cache: "no-store",
+        headers: authHeaders,
+      });
       if (res.ok) setAgents(((await res.json()) as { agents: MarketAgent[] }).agents);
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [authHeaders]);
 
   useEffect(() => {
     void refreshLiveData();
-    const interval = window.setInterval(refreshLiveData, 1600);
+    const interval = window.setInterval(refreshLiveData, 5000);
     return () => window.clearInterval(interval);
   }, [refreshLiveData]);
 
@@ -170,8 +228,8 @@ export function WalletDemo() {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: DEMO_USER_ID, message: msg, mode: "text" }),
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ userId: authUser.userId, message: msg, mode: "text" }),
       });
       if (!res.ok) throw new Error("chat failed");
       const body = (await res.json()) as ChatResponse;
@@ -201,7 +259,7 @@ export function WalletDemo() {
   }
 
   async function resetDemo() {
-    await fetch("/api/reset", { method: "POST" });
+    await fetch("/api/reset", { method: "POST", headers: authHeaders });
     setTab("chat");
     setInput("");
     setMessages([{ id: "welcome", role: "assistant", text: WELCOME }]);
@@ -252,10 +310,24 @@ export function WalletDemo() {
           <div className="nav-spacer" />
 
           <div className="nav-bottom">
+            <div className="user-chip">
+              {authUser.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={authUser.imageUrl} alt="" />
+              ) : (
+                <User size={14} />
+              )}
+              <span>{authUser.name ?? authUser.email}</span>
+            </div>
             <span className="pill">
               <ShieldCheck size={13} />
               Testnet USDC
             </span>
+            <SignOutButton redirectUrl="/">
+              <button className="btn btn-ghost" type="button">
+                Sign out
+              </button>
+            </SignOutButton>
             <button className="btn btn-ghost" type="button" onClick={() => void resetDemo()}>
               <RotateCcw size={14} />
               Reset
@@ -285,7 +357,7 @@ export function WalletDemo() {
               onCreate={async (payload) => {
                 await fetch("/api/automations", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: { "Content-Type": "application/json", ...authHeaders },
                   body: JSON.stringify(payload),
                 });
                 void refreshLiveData();
@@ -301,7 +373,7 @@ export function WalletDemo() {
               onCreate={async (goal) => {
                 await fetch("/api/marketplace", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: { "Content-Type": "application/json", ...authHeaders },
                   body: JSON.stringify({ goal }),
                 });
                 await fetchAgents();

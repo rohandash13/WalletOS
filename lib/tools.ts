@@ -21,6 +21,7 @@ import {
   addAutomation,
 } from "./redis";
 import {
+  USER_ID,
   BUCKETS,
   BUCKET_LABELS,
   type BucketId,
@@ -30,6 +31,8 @@ import {
 import { selectAgent, resolveAgent, routeViaAgent } from "./marketplace";
 
 const USDC = "usdc" as const;
+const BALANCE_TIMEOUT_MS = Number(process.env.WALLETOS_BALANCE_TIMEOUT_MS ?? 3500);
+const DEMO_WALLET_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -48,23 +51,41 @@ function isBucket(v: unknown): v is BucketId {
  * arrived (faucet, a paycheck deposit) shows up as a surplus and is credited to
  * `available`. Keeps the invariant: sum(buckets) == on-chain USDC.
  */
-async function reconcile(): Promise<{ usdc: number; eth: number }> {
+async function reconcile(userId: string = USER_ID): Promise<{ usdc: number; eth: number }> {
   const wallet = getWallet();
   const [usdc, eth, portfolio] = await Promise.all([
     wallet.getUsdcBalance(),
     wallet.getEthBalance(),
-    getPortfolio(),
+    getPortfolio(userId),
   ]);
   const ledger = sum(BUCKETS.map((b) => portfolio[b]));
   const surplus = Math.round((usdc - ledger) * 1e6) / 1e6;
   if (surplus > 0.000001) {
-    await adjustBucket("available", surplus);
+    await adjustBucket("available", surplus, userId);
     await publishEvent("portfolio", `Deposit of ${surplus} USDC credited to Available`, {
       bucket: "available",
       delta: surplus,
-    });
+    }, userId);
   }
   return { usdc, eth };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /* --------------------------- tool definitions ----------------------------- */
@@ -191,8 +212,8 @@ export const toolNames = tools.map((t) => t.name);
  * Apply any persisted spending policy to the wallet singleton. Call once before
  * processing a request so a policy set in a previous run still applies.
  */
-export async function hydratePolicy(): Promise<void> {
-  const stored = await getStoredPolicy();
+export async function hydratePolicy(userId: string = USER_ID): Promise<void> {
+  const stored = await getStoredPolicy(userId);
   if (stored) getWallet().setPolicy(stored);
 }
 
@@ -203,6 +224,10 @@ export interface ToolOutcome {
   result: unknown;
 }
 
+export interface ToolContext {
+  userId?: string;
+}
+
 /**
  * Execute a tool call. Returns a JSON-serializable result that is sent back to
  * Claude as the tool_result. All side effects (rail + ledger + events) happen here.
@@ -210,23 +235,25 @@ export interface ToolOutcome {
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
+  context: ToolContext = {},
 ): Promise<ToolOutcome> {
   try {
+    const userId = context.userId ?? USER_ID;
     switch (name) {
       case "get_balance":
-        return { ok: true, result: await getBalanceSnapshot() };
+        return { ok: true, result: await getBalanceSnapshot(userId) };
       case "send_payment":
-        return { ok: true, result: await handleSendPayment(input) };
+        return { ok: true, result: await handleSendPayment(input, userId) };
       case "set_policy":
-        return { ok: true, result: await handleSetPolicy(input) };
+        return { ok: true, result: await handleSetPolicy(input, userId) };
       case "create_automation":
-        return { ok: true, result: await handleCreateAutomation(input) };
+        return { ok: true, result: await handleCreateAutomation(input, userId) };
       case "route_to_agent":
-        return { ok: true, result: await handleRouteToAgent(input) };
+        return { ok: true, result: await handleRouteToAgent(input, userId) };
       case "rebalance_funds":
-        return { ok: true, result: await handleRebalance(input) };
+        return { ok: true, result: await handleRebalance(input, userId) };
       case "explain_decision":
-        return { ok: true, result: await handleExplain(input) };
+        return { ok: true, result: await handleExplain(input, userId) };
       default:
         return { ok: false, result: { error: `Unknown tool: ${name}` } };
     }
@@ -241,14 +268,40 @@ export async function executeTool(
 }
 
 /** Shared balance snapshot used by both the get_balance tool and GET /api/balance. */
-export async function getBalanceSnapshot() {
-  const { usdc, eth } = await reconcile();
-  const [portfolio, txs] = await Promise.all([getPortfolio(), listTxs(10)]);
-  const address = await getWallet().getAddress();
-  return { address, onChain: { usdc, eth }, portfolio, recentTransactions: txs };
+export async function getBalanceSnapshot(userId: string = USER_ID) {
+  const [portfolio, txs] = await Promise.all([
+    getPortfolio(userId),
+    listTxs(10, userId),
+  ]);
+
+  try {
+    const [{ usdc, eth }, address] = await withTimeout(
+      Promise.all([reconcile(userId), getWallet().getAddress()]),
+      BALANCE_TIMEOUT_MS,
+      "Live wallet balance",
+    );
+    const reconciledPortfolio = await getPortfolio(userId);
+    return {
+      address,
+      onChain: { usdc, eth },
+      portfolio: reconciledPortfolio,
+      recentTransactions: txs,
+      live: true,
+    };
+  } catch (err) {
+    const warning = err instanceof Error ? err.message : String(err);
+    return {
+      address: DEMO_WALLET_ADDRESS,
+      onChain: { usdc: 0, eth: 0 },
+      portfolio,
+      recentTransactions: txs,
+      live: false,
+      warning,
+    };
+  }
 }
 
-async function handleSendPayment(input: Record<string, unknown>) {
+async function handleSendPayment(input: Record<string, unknown>, userId: string) {
   const to = String(input.to ?? "");
   const amount = Number(input.amount);
   const note = input.note ? String(input.note) : undefined;
@@ -284,7 +337,7 @@ async function handleSendPayment(input: Record<string, unknown>) {
     settledOnChain = settle;
   }
 
-  const newBucket = await adjustBucket(fromBucket, -amount);
+  const newBucket = await adjustBucket(fromBucket, -amount, userId);
 
   const tx: TxRecord = {
     id: genId("tx"),
@@ -301,13 +354,13 @@ async function handleSendPayment(input: Record<string, unknown>) {
     status: "confirmed",
     ts: Date.now(),
   };
-  await addTx(tx);
+  await addTx(tx, userId);
 
-  await publishEvent("tx", `Sent ${amount} USDC${note ? ` (${note})` : ""}`, tx);
+  await publishEvent("tx", `Sent ${amount} USDC${note ? ` (${note})` : ""}`, tx, userId);
   await publishEvent("portfolio", `${BUCKET_LABELS[fromBucket]} → ${newBucket} USDC`, {
     bucket: fromBucket,
     balance: newBucket,
-  });
+  }, userId);
 
   return {
     transactionHash: txHash,
@@ -320,7 +373,7 @@ async function handleSendPayment(input: Record<string, unknown>) {
   };
 }
 
-async function handleSetPolicy(input: Record<string, unknown>) {
+async function handleSetPolicy(input: Record<string, unknown>, userId: string) {
   const patch: { maxUsdcPerTx?: number; allowlist?: string[] } = {};
   if (input.maxUsdcPerTx != null) patch.maxUsdcPerTx = Number(input.maxUsdcPerTx);
   if (Array.isArray(input.allowlist)) {
@@ -328,14 +381,14 @@ async function handleSetPolicy(input: Record<string, unknown>) {
   }
   const policy = getWallet().setPolicy(patch);
   // Persist so it survives across requests / restarts.
-  const stored = (await getStoredPolicy()) ?? {};
-  await setStoredPolicy({ ...stored, ...patch });
+  const stored = (await getStoredPolicy(userId)) ?? {};
+  await setStoredPolicy({ ...stored, ...patch }, userId);
 
-  await publishEvent("policy", `Policy updated: max ${policy.maxUsdcPerTx} USDC/tx`, policy);
+  await publishEvent("policy", `Policy updated: max ${policy.maxUsdcPerTx} USDC/tx`, policy, userId);
   return policy;
 }
 
-async function handleCreateAutomation(input: Record<string, unknown>) {
+async function handleCreateAutomation(input: Record<string, unknown>, userId: string) {
   const type: Automation["type"] =
     input.type === "protect_bucket"
       ? "protect_bucket"
@@ -356,19 +409,25 @@ async function handleCreateAutomation(input: Record<string, unknown>) {
     active: true,
     createdAt: Date.now(),
   };
-  await addAutomation(automation);
+  await addAutomation(automation, userId);
 
   // protect_bucket reserves funds immediately (available -> protected bucket).
   if (type === "protect_bucket" && automation.amount && automation.bucket) {
-    await moveBetweenBuckets("available", automation.bucket, automation.amount);
+    await moveBetweenBuckets("available", automation.bucket, automation.amount, userId);
     await publishEvent(
       "portfolio",
       `Reserved ${automation.amount} USDC into ${BUCKET_LABELS[automation.bucket]}`,
       { bucket: automation.bucket, delta: automation.amount },
+      userId,
     );
   }
 
-  await publishEvent("automation", `Automation set up: ${automationLabel(automation)}`, automation);
+  await publishEvent(
+    "automation",
+    `Automation set up: ${automationLabel(automation)}`,
+    automation,
+    userId,
+  );
   return automation;
 }
 
@@ -403,12 +462,12 @@ export function automationLabel(a: Automation): string {
   }
 }
 
-async function handleRouteToAgent(input: Record<string, unknown>) {
+async function handleRouteToAgent(input: Record<string, unknown>, userId: string) {
   const amount = Number(input.amount);
   const riskScore = Number(input.riskScore);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error(`Invalid amount: ${amount}`);
 
-  const portfolio = await getPortfolio();
+  const portfolio = await getPortfolio(userId);
   if (portfolio.available < amount) {
     throw new Error(`Insufficient Available balance: ${portfolio.available} < ${amount}`);
   }
@@ -440,8 +499,8 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
   }
 
   // 3. Logical ledger move available -> agent's bucket (full amount).
-  await moveBetweenBuckets("available", agent.bucket, amount);
-  const updated = await getPortfolio();
+  await moveBetweenBuckets("available", agent.bucket, amount, userId);
+  const updated = await getPortfolio(userId);
 
   const tx: TxRecord = {
     id: genId("tx"),
@@ -459,17 +518,18 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
     status: "confirmed",
     ts: Date.now(),
   };
-  await addTx(tx);
+  await addTx(tx, userId);
 
   await publishEvent(
     "agent",
     `Routed ${amount} USDC to ${agent.title} (risk ${riskScore}/10, ~${plan.projectedApy}% APY)${plan.live ? "" : " [offline strategy]"}`,
     { agent: agent.id, plan, settledOnChain, txHash, explorerUrl, agentAddress },
+    userId,
   );
   await publishEvent("portfolio", `${BUCKET_LABELS[agent.bucket]} → ${updated[agent.bucket]} USDC`, {
     bucket: agent.bucket,
     balance: updated[agent.bucket],
-  });
+  }, userId);
 
   return {
     agent: agent.id,
@@ -489,20 +549,20 @@ async function handleRouteToAgent(input: Record<string, unknown>) {
   };
 }
 
-async function handleRebalance(input: Record<string, unknown>) {
+async function handleRebalance(input: Record<string, unknown>, userId: string) {
   const amount = Number(input.amount);
   const fromBucket: BucketId = isBucket(input.fromBucket) ? input.fromBucket : "stable_invest";
   if (!Number.isFinite(amount) || amount <= 0) throw new Error(`Invalid amount: ${amount}`);
 
-  const portfolio = await getPortfolio();
+  const portfolio = await getPortfolio(userId);
   if (portfolio[fromBucket] < amount) {
     throw new Error(
       `Insufficient ${BUCKET_LABELS[fromBucket]} balance: ${portfolio[fromBucket]} < ${amount}`,
     );
   }
 
-  await moveBetweenBuckets(fromBucket, "available", amount);
-  const updated = await getPortfolio();
+  await moveBetweenBuckets(fromBucket, "available", amount, userId);
+  const updated = await getPortfolio(userId);
 
   const tx: TxRecord = {
     id: genId("tx"),
@@ -518,19 +578,20 @@ async function handleRebalance(input: Record<string, unknown>) {
     status: "confirmed",
     ts: Date.now(),
   };
-  await addTx(tx);
+  await addTx(tx, userId);
 
   await publishEvent(
     "portfolio",
     `Moved ${amount} USDC from ${BUCKET_LABELS[fromBucket]} back to Available`,
     { bucket: "available", balance: updated.available, delta: amount },
+    userId,
   );
 
   return { amount, fromBucket, toBucket: "available", portfolio: updated };
 }
 
-async function handleExplain(input: Record<string, unknown>) {
+async function handleExplain(input: Record<string, unknown>, userId: string) {
   const summary = String(input.summary ?? "");
-  await publishEvent("message", summary);
+  await publishEvent("message", summary, undefined, userId);
   return { summary };
 }

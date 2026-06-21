@@ -48,3 +48,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# clerk configuration (can include secrets)
+/.clerk/

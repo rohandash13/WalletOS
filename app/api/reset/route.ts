@@ -6,14 +6,18 @@
 import { NextResponse } from "next/server";
 import { seedDemoPaycheck } from "@/lib/redis";
 import { resetConversation } from "@/lib/agent";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST() {
   try {
-    resetConversation();
-    await seedDemoPaycheck(2000, true);
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
+    resetConversation(session.userId);
+    await seedDemoPaycheck(2000, true, session.userId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

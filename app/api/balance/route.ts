@@ -5,13 +5,17 @@
 import { NextResponse } from "next/server";
 import { getBalanceSnapshot } from "@/lib/tools";
 import { toBalanceResponse } from "@/lib/adapter";
+import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const snapshot = await getBalanceSnapshot();
+    const session = await requireAuth();
+    if (session.response) return session.response;
+
+    const snapshot = await getBalanceSnapshot(session.userId);
     return NextResponse.json(toBalanceResponse(snapshot));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
