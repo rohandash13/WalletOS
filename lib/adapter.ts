@@ -105,7 +105,19 @@ export function toWalletEvent(e: AppEvent): WalletEvent {
 
 /** Newest-first, for the "Live activity" feed. */
 export function toWalletEvents(events: AppEvent[]): WalletEvent[] {
-  return [...events].sort((a, b) => b.id - a.id).map(toWalletEvent);
+  return [...events]
+    .filter((e) => {
+      // Hide the on-chain balance-sync events (from reset) — they're plumbing.
+      const data = asRecord(e.data);
+      const isBalanceSync =
+        e.type === "portfolio" &&
+        (e.summary === "Balance refreshed" ||
+          e.summary.toLowerCase().startsWith("synced ")) &&
+        data.onChainUsdc != null;
+      return !isBalanceSync;
+    })
+    .sort((a, b) => b.id - a.id)
+    .map(toWalletEvent);
 }
 
 /* ------------------------------ automations ------------------------------- */

@@ -1,11 +1,13 @@
 /**
  * POST /api/reset — full demo restart (REAL backend).
- * Zeros the bucket ledger, clears the Claude conversation, then reseeds a fresh
- * $5,000 opening balance into Available for the authed user. Returns: { ok: true }
+ * Zeros the bucket ledger, clears the Claude conversation, then syncs Available to
+ * the authed user's real on-chain CDP wallet balance (USDC × $1,000 scale).
+ * Returns: { ok: true }
  */
 import { NextResponse } from "next/server";
-import { seedDemoPaycheck } from "@/lib/redis";
+import { syncLedgerToOnChainBalance } from "@/lib/redis";
 import { resetConversation } from "@/lib/agent";
+import { getWallet } from "@/lib/wallet";
 import { requireAuth } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -17,7 +19,8 @@ export async function POST() {
     if (session.response) return session.response;
 
     resetConversation(session.userId);
-    await seedDemoPaycheck(5000, true, session.userId);
+    const onChainUsdc = await getWallet().getUsdcBalance();
+    await syncLedgerToOnChainBalance(onChainUsdc, session.userId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

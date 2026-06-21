@@ -25,6 +25,7 @@ import {
   type EventType,
   type Automation,
 } from "./wallet-types";
+import { toDemoUsd, scaleLabel } from "./money";
 
 /* ----------------------------- low-level store ---------------------------- */
 
@@ -269,6 +270,49 @@ export async function listAutomations(
 ): Promise<Automation[]> {
   const raw = await kv.lrange(k.automations(userId), 0, limit - 1);
   return raw.map((r) => JSON.parse(r) as Automation);
+}
+
+/**
+ * Reset the demo ledger to mirror the actual CDP wallet's on-chain balance,
+ * expressed in USD-equivalent using the configured testnet scale (1 USDC = $1,000).
+ * This is the on-chain-mirroring reset path; seedDemoPaycheck is the fixed-amount one.
+ */
+export async function syncLedgerToOnChainBalance(
+  usdcBalance: number,
+  userId: string = USER_ID,
+): Promise<Portfolio> {
+  for (const b of BUCKETS) await setBucket(b, 0, userId);
+  await kv.del(k.tx(userId));
+  await kv.del(k.events(userId));
+  await kv.del(k.eventsSeq(userId));
+  await kv.del(k.automations(userId));
+  await kv.del(k.policy(userId));
+
+  const amount = toDemoUsd(usdcBalance);
+  if (amount > 0) await setBucket("available", amount, userId);
+  const portfolio = await getPortfolio(userId);
+
+  const tx: TxRecord = {
+    id: `tx_sync_${Date.now().toString(36)}`,
+    kind: "internal",
+    type: "deposit",
+    amount,
+    token: "usdc",
+    from: "on_chain_wallet",
+    to: "available",
+    toBucket: "available",
+    note: `Synced ledger from wallet balance (${scaleLabel()})`,
+    status: "confirmed",
+    ts: Date.now(),
+  };
+  await addTx(tx, userId);
+  await publishEvent(
+    "portfolio",
+    `Balance refreshed`,
+    { bucket: "available", balance: amount, onChainUsdc: usdcBalance, scale: scaleLabel() },
+    userId,
+  );
+  return portfolio;
 }
 
 /* ------------------------------ demo seed --------------------------------- */
