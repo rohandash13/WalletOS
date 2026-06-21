@@ -316,6 +316,15 @@ export async function addPendingApproval(
   userId: string = USER_ID,
 ): Promise<void> {
   const list = await listPendingApprovals(userId);
+  // Don't stack identical asks (same kind/amount/recipient) — one pending per move.
+  const dup = list.some(
+    (x) =>
+      x.kind === p.kind &&
+      x.amount === p.amount &&
+      (x.to ?? "") === (p.to ?? "") &&
+      (x.agentId ?? "") === (p.agentId ?? ""),
+  );
+  if (dup) return;
   list.push(p);
   await kv.set(k.pending(userId), JSON.stringify(list));
 }
