@@ -35,7 +35,6 @@ import type {
 } from "@/lib/types";
 
 type Tab = "chat" | "automations" | "marketplace";
-
 type Message = { id: string; role: "user" | "assistant"; text: string };
 
 type MarketAgent = {
@@ -58,7 +57,7 @@ const PRIMARY_PROMPT =
 const RECOVERY_PROMPT = "Actually, I need $200 back.";
 
 const WELCOME =
-  "Tell me what should happen with your money and I'll set it up — moving, protecting, and investing in plain English.";
+  "Tell me what should happen with your money and I'll set it up — moving, saving, protecting, and growing it in plain English.";
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -68,27 +67,23 @@ const money = new Intl.NumberFormat("en-US", {
 
 function actionLabel(a: Action) {
   if (a.type === "send_payment") return "Payment sent";
-  if (a.type === "route_to_agent") return "Routed to agent";
+  if (a.type === "route_to_agent") return "Money invested";
   if (a.type === "rebalance_funds") return "Funds moved back";
-  if (a.type === "policy_updated") return "Policy updated";
+  if (a.type === "policy_updated") return "Limit updated";
   if (a.type === "automation_created") return "Automation created";
   return "Done";
 }
 
 function actionDescription(a: Action) {
-  if (a.type === "rebalance_funds" && a.amount) {
+  if (a.type === "rebalance_funds" && a.amount)
     return `${money.format(a.amount)} moved back to Available`;
-  }
-  if (a.agentName) {
-    return `${a.agentName}${a.amount ? ` · ${money.format(a.amount)}` : ""}`;
-  }
+  if (a.agentName) return `${a.agentName}${a.amount ? ` · ${money.format(a.amount)}` : ""}`;
   if (a.amount) return money.format(a.amount);
   return "Rule prepared";
 }
 
 function ActionIcon({ type }: { type: string }) {
-  if (type === "send_payment" || type === "rebalance_funds")
-    return <ArrowLeftRight size={15} />;
+  if (type === "send_payment" || type === "rebalance_funds") return <ArrowLeftRight size={15} />;
   if (type === "route_to_agent") return <PiggyBank size={15} />;
   return <CalendarClock size={15} />;
 }
@@ -124,10 +119,7 @@ export function WalletDemo() {
   const [why, setWhy] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
 
-  const total = useMemo(
-    () => buckets.reduce((sum, b) => sum + b.balance, 0),
-    [buckets],
-  );
+  const total = useMemo(() => buckets.reduce((s, b) => s + b.balance, 0), [buckets]);
   const available = useMemo(
     () => buckets.find((b) => b.key === "checking")?.balance ?? 0,
     [buckets],
@@ -145,7 +137,7 @@ export function WalletDemo() {
       if (au.ok)
         setAutomations(((await au.json()) as { automations: Automation[] }).automations);
     } catch {
-      /* keep last state if the backend is briefly unavailable */
+      /* keep last state */
     }
   }, []);
 
@@ -222,17 +214,44 @@ export function WalletDemo() {
   return (
     <main className="app">
       <div className="shell">
-        <header className="topbar">
+        <nav className="card nav">
           <div className="brand">
             <div className="logo">
-              <Wallet size={19} />
+              <Wallet size={18} />
             </div>
             <div className="brand-text">
               <span className="brand-name">WalletOS</span>
               <span className="brand-tag">Your private banker</span>
             </div>
           </div>
-          <div className="topbar-right">
+
+          <div className="nav-tabs">
+            <button
+              className={`nav-tab ${tab === "chat" ? "active" : ""}`}
+              onClick={() => setTab("chat")}
+            >
+              <MessageSquareText size={16} />
+              Chat
+            </button>
+            <button
+              className={`nav-tab ${tab === "automations" ? "active" : ""}`}
+              onClick={() => setTab("automations")}
+            >
+              <CalendarClock size={16} />
+              Automations
+            </button>
+            <button
+              className={`nav-tab ${tab === "marketplace" ? "active" : ""}`}
+              onClick={() => setTab("marketplace")}
+            >
+              <Bot size={16} />
+              Agents
+            </button>
+          </div>
+
+          <div className="nav-spacer" />
+
+          <div className="nav-bottom">
             <span className="pill">
               <ShieldCheck size={13} />
               Testnet USDC
@@ -242,87 +261,59 @@ export function WalletDemo() {
               Reset
             </button>
           </div>
-        </header>
+        </nav>
 
-        <div className="layout">
-          <div className="main-col">
-            <nav className="tabs">
-              <button
-                className={`tab ${tab === "chat" ? "active" : ""}`}
-                onClick={() => setTab("chat")}
-              >
-                <MessageSquareText size={15} />
-                Chat
-              </button>
-              <button
-                className={`tab ${tab === "automations" ? "active" : ""}`}
-                onClick={() => setTab("automations")}
-              >
-                <CalendarClock size={15} />
-                Automations
-              </button>
-              <button
-                className={`tab ${tab === "marketplace" ? "active" : ""}`}
-                onClick={() => setTab("marketplace")}
-              >
-                <Bot size={15} />
-                Agents
-              </button>
-            </nav>
-
-            {tab === "chat" && (
-              <ChatPanel
-                input={input}
-                isSending={isSending}
-                messages={messages}
-                actions={actions}
-                onInputChange={setInput}
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void submitMessage(input);
-                }}
-                onDemo={() => void submitMessage(PRIMARY_PROMPT)}
-                onRecovery={() => void submitMessage(RECOVERY_PROMPT)}
-              />
-            )}
-
-            {tab === "automations" && (
-              <AutomationsPanel
-                automations={automations}
-                onCreate={async (payload) => {
-                  await fetch("/api/automations", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
-                  });
-                  void refreshLiveData();
-                }}
-              />
-            )}
-
-            {tab === "marketplace" && (
-              <MarketplacePanel
-                agents={agents}
-                events={events}
-                riskScore={riskScore}
-                available={available}
-                onCreate={async (goal) => {
-                  await fetch("/api/marketplace", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ goal }),
-                  });
-                  await fetchAgents();
-                }}
-              />
-            )}
-          </div>
-
-          <aside className="side-col">
-            <PortfolioCard buckets={buckets} total={total} riskScore={riskScore} why={why} />
-            <ActivityCard events={events} />
-          </aside>
+        <div className="main-col">
+          {tab === "chat" && (
+            <ChatPanel
+              input={input}
+              isSending={isSending}
+              messages={messages}
+              actions={actions}
+              onInputChange={setInput}
+              onSubmit={(e) => {
+                e.preventDefault();
+                void submitMessage(input);
+              }}
+              onDemo={() => void submitMessage(PRIMARY_PROMPT)}
+              onRecovery={() => void submitMessage(RECOVERY_PROMPT)}
+            />
+          )}
+          {tab === "automations" && (
+            <AutomationsPanel
+              automations={automations}
+              onCreate={async (payload) => {
+                await fetch("/api/automations", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                void refreshLiveData();
+              }}
+            />
+          )}
+          {tab === "marketplace" && (
+            <MarketplacePanel
+              agents={agents}
+              events={events}
+              riskScore={riskScore}
+              available={available}
+              onCreate={async (goal) => {
+                await fetch("/api/marketplace", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ goal }),
+                });
+                await fetchAgents();
+              }}
+            />
+          )}
         </div>
+
+        <aside className="side-col">
+          <PortfolioCard buckets={buckets} total={total} riskScore={riskScore} why={why} />
+          <ActivityCard events={events} />
+        </aside>
       </div>
     </main>
   );
@@ -350,10 +341,10 @@ function ChatPanel({
   const stackRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     stackRef.current?.scrollTo({ top: stackRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, actions]);
+  }, [messages, actions, isSending]);
 
   return (
-    <div className="card panel chat">
+    <div className="panel chat">
       <div className="messages" ref={stackRef}>
         {messages.map((m) => (
           <div className={`msg ${m.role}`} key={m.id}>
@@ -399,7 +390,7 @@ function ChatPanel({
           aria-label="Message WalletOS"
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
-          placeholder="Ask WalletOS to move, protect, or invest your money…"
+          placeholder="Ask WalletOS to move, save, protect, or grow your money…"
         />
         <button className="send" type="submit" disabled={isSending}>
           <Send size={16} />
@@ -408,7 +399,7 @@ function ChatPanel({
 
       <div className="suggestions">
         <button className="chip" type="button" onClick={onDemo} disabled={isSending}>
-          ▶ Run example: payday plan
+          ▶ Try an example: payday plan
         </button>
         <button className="chip" type="button" onClick={onRecovery} disabled={isSending}>
           I need $200 back
@@ -418,9 +409,24 @@ function ChatPanel({
   );
 }
 
-type AutoPayload =
-  | { type: "recurring_transfer"; amount: number; to: string; schedule: string; note?: string }
-  | { type: "protect_bucket"; amount: number; bucket: "rent"; note?: string };
+type AutoPayload = Record<string, unknown>;
+
+const TEMPLATES: {
+  key: string;
+  label: string;
+  needs: ("amount" | "to" | "schedule" | "threshold")[];
+}[] = [
+  { key: "bill", label: "Pay a bill (rent, utilities, phone…)", needs: ["amount", "to", "schedule"] },
+  { key: "family", label: "Send money to family / allowance", needs: ["amount", "to", "schedule"] },
+  { key: "auto_save", label: "Auto-save from each paycheck", needs: ["amount", "schedule"] },
+  { key: "protect", label: "Set aside money (protect it first)", needs: ["amount"] },
+  { key: "recurring_invest", label: "Invest on a schedule", needs: ["amount", "schedule"] },
+  { key: "roundup", label: "Round up purchases into savings", needs: [] },
+  { key: "smart_card", label: "Pay credit card in full (smart)", needs: ["threshold"] },
+  { key: "paycheck_split", label: "Split my paycheck into accounts", needs: [] },
+  { key: "low_balance_alert", label: "Low-balance alert", needs: ["threshold"] },
+  { key: "subscription_watch", label: "Watch for unused subscriptions", needs: [] },
+];
 
 function AutomationsPanel({
   automations,
@@ -429,29 +435,47 @@ function AutomationsPanel({
   automations: Automation[];
   onCreate: (payload: AutoPayload) => Promise<void>;
 }) {
-  const [type, setType] = useState<"recurring_transfer" | "protect_bucket">(
-    "recurring_transfer",
-  );
+  const [cat, setCat] = useState(TEMPLATES[0].key);
   const [amount, setAmount] = useState("");
   const [to, setTo] = useState("");
   const [schedule, setSchedule] = useState("monthly");
+  const [threshold, setThreshold] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const tmpl = TEMPLATES.find((t) => t.key === cat)!;
+  const needs = (f: string) => tmpl.needs.includes(f as never);
+
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const amt = Number(amount);
-    if (!amt || amt <= 0 || busy) return;
-    if (type === "recurring_transfer" && !/^0x[a-fA-F0-9]{40}$/.test(to.trim())) return;
+    if (busy) return;
+    if (needs("amount") && !(Number(amount) > 0)) return;
+    if (needs("to") && !/^0x[a-fA-F0-9]{40}$/.test(to.trim())) return;
+    if (needs("threshold") && !(Number(threshold) >= 0)) return;
+
+    const payload: AutoPayload = { category: cat, note: note.trim() || undefined };
+    if (cat === "protect") {
+      payload.type = "protect_bucket";
+      payload.bucket = "rent";
+      payload.amount = Number(amount);
+    } else if (cat === "bill" || cat === "family") {
+      payload.type = "recurring_transfer";
+      payload.amount = Number(amount);
+      payload.to = to.trim();
+      payload.schedule = schedule;
+    } else {
+      payload.type = "rule";
+      if (needs("amount")) payload.amount = Number(amount);
+      if (needs("schedule")) payload.schedule = schedule;
+      if (needs("threshold")) payload.threshold = Number(threshold);
+    }
+
     setBusy(true);
     try {
-      await onCreate(
-        type === "recurring_transfer"
-          ? { type, amount: amt, to: to.trim(), schedule, note: note.trim() || undefined }
-          : { type: "protect_bucket", amount: amt, bucket: "rent", note: note.trim() || undefined },
-      );
+      await onCreate(payload);
       setAmount("");
       setTo("");
+      setThreshold("");
       setNote("");
     } finally {
       setBusy(false);
@@ -459,91 +483,110 @@ function AutomationsPanel({
   }
 
   return (
-    <div className="card panel">
+    <div className="panel">
       <div className="panel-head">
         <div>
           <h2>Automations</h2>
-          <p className="sub">Rules that keep working after the chat.</p>
+          <p className="sub">Set up the everyday money moves that run on their own.</p>
         </div>
         <span className="tag neutral">{automations.length} active</span>
       </div>
 
-      <form className="auto-form" onSubmit={submit}>
-        <div className="field">
-          <label>Type</label>
-          <select value={type} onChange={(e) => setType(e.target.value as typeof type)}>
-            <option value="recurring_transfer">Recurring transfer</option>
-            <option value="protect_bucket">Protect funds</option>
-          </select>
-        </div>
-        <div className="field">
-          <label>Amount (USDC)</label>
-          <input
-            type="number"
-            min="0"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            placeholder="50"
-          />
-        </div>
-        {type === "recurring_transfer" ? (
-          <>
-            <div className="field full">
-              <label>Recipient address</label>
-              <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="0x…" />
-            </div>
+      <div className="scroll">
+        <form className="auto-form" onSubmit={submit}>
+          <div className="field full">
+            <label>What to automate</label>
+            <select value={cat} onChange={(e) => setCat(e.target.value)}>
+              {TEMPLATES.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {needs("amount") && (
             <div className="field">
-              <label>Schedule</label>
+              <label>Amount (USDC)</label>
+              <input
+                type="number"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="50"
+              />
+            </div>
+          )}
+          {needs("threshold") && (
+            <div className="field">
+              <label>Threshold ($)</label>
+              <input
+                type="number"
+                min="0"
+                value={threshold}
+                onChange={(e) => setThreshold(e.target.value)}
+                placeholder="100"
+              />
+            </div>
+          )}
+          {needs("schedule") && (
+            <div className="field">
+              <label>How often</label>
               <select value={schedule} onChange={(e) => setSchedule(e.target.value)}>
                 <option value="monthly">Monthly</option>
                 <option value="weekly">Weekly</option>
                 <option value="monthly:1">Monthly (1st)</option>
+                <option value="biweekly">Every 2 weeks</option>
               </select>
             </div>
-          </>
+          )}
+          {needs("to") && (
+            <div className="field full">
+              <label>Recipient address</label>
+              <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="0x…" />
+            </div>
+          )}
+          <div className="field full">
+            <label>Note (optional)</label>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. rent to landlord, Netflix, gym…"
+            />
+          </div>
+          <div className="field full">
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              <Plus size={15} />
+              {busy ? "Adding…" : "Add automation"}
+            </button>
+          </div>
+        </form>
+
+        {automations.length === 0 ? (
+          <div className="empty">
+            <CalendarClock size={26} />
+            <h3>No automations yet</h3>
+            <p>Add one above, or just ask in chat — e.g. “send my sister $50 every month”.</p>
+          </div>
         ) : (
-          <div className="field">
-            <label>Protected as</label>
-            <input value="Rent / safe reserve" disabled />
+          <div className="list">
+            {automations.map((a) => (
+              <div className="row-card" key={a.id}>
+                <div className="row-icon">
+                  <CalendarClock size={17} />
+                </div>
+                <div className="row-main">
+                  <h3>{a.name}</h3>
+                  <p>{a.explanation}</p>
+                </div>
+                <div className="row-meta">
+                  <span className={`tag ${tone(a.status)}`}>{a.status}</span>
+                  <span className="when">Next {formatDate(a.nextRunAt)}</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
-        <div className="field full">
-          <label>Note (optional)</label>
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. rent to landlord" />
-        </div>
-        <div className="field full">
-          <button className="btn btn-primary" type="submit" disabled={busy}>
-            <Plus size={15} />
-            {busy ? "Adding…" : "Add automation"}
-          </button>
-        </div>
-      </form>
-
-      {automations.length === 0 ? (
-        <div className="empty">
-          <CalendarClock size={26} />
-          <h3>No automations yet</h3>
-          <p>Add one above, or ask in chat — e.g. “send my sister $50 every month”.</p>
-        </div>
-      ) : (
-        <div className="list">
-          {automations.map((a) => (
-            <div className="row-card" key={a.id}>
-              <div className="row-icon">
-                <CalendarClock size={17} />
-              </div>
-              <div className="row-main">
-                <h3>{a.name}</h3>
-                <p>{a.explanation}</p>
-              </div>
-              <div className="row-meta">
-                <span className={`tag ${tone(a.status)}`}>{a.status}</span>
-                <span className="when">Next {formatDate(a.nextRunAt)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -578,97 +621,101 @@ function MarketplacePanel({
   }
 
   return (
-    <div className="card panel">
+    <div className="panel">
       <div className="panel-head">
         <div>
-          <h2>Agent Marketplace</h2>
-          <p className="sub">Specialized investing agents, matched to your risk.</p>
+          <h2>Money Helpers</h2>
+          <p className="sub">Specialized helpers that grow your money, matched to your goals.</p>
         </div>
         <RiskBadge score={riskScore} />
       </div>
 
-      <form className="create-agent" onSubmit={create}>
-        <input
-          value={goal}
-          onChange={(e) => setGoal(e.target.value)}
-          placeholder="Describe a strategy to spin up an agent, e.g. “ETH staking with downside protection”"
-        />
-        <button className="btn btn-primary" type="submit" disabled={busy}>
-          <Plus size={15} />
-          {busy ? "Creating…" : "Create"}
-        </button>
-      </form>
+      <div className="scroll">
+        <form className="create-agent" onSubmit={create}>
+          <input
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            placeholder='Describe a goal to create a helper, e.g. "save for a house in 3 years" or "grow my money but keep it safe"'
+          />
+          <button className="btn btn-primary" type="submit" disabled={busy}>
+            <Plus size={15} />
+            {busy ? "Creating…" : "Create"}
+          </button>
+        </form>
 
-      <div className="agent-grid">
-        {agents.map((a) => {
-          const lockedByAmount = available < a.minAmount;
-          const inBand = riskScore == null || (riskScore >= a.riskBand[0] && riskScore <= a.riskBand[1]);
-          const unlocked = !lockedByAmount && inBand;
-          return (
-            <div className={`agent ${unlocked ? "unlocked" : "locked"}`} key={a.id}>
-              <div className="agent-top">
-                <span className={`agent-dot ${a.online ? "online" : ""}`}>
-                  <i />
-                  {a.online ? "Online" : "Offline"}
-                </span>
-                {a.dynamic ? (
-                  <span className="tag good">Custom</span>
-                ) : a.kind === "reserve" ? (
-                  <span className="tag neutral">Reserve</span>
-                ) : inBand && riskScore != null ? (
-                  <span className="tag good">Matched</span>
-                ) : null}
-              </div>
-              <h3>{a.title}</h3>
-              <p className="desc">{a.strategy ?? a.description}</p>
-              <div className="agent-foot">
-                <span>
-                  Risk {a.riskBand[0]}–{a.riskBand[1]}
-                  {a.minAmount > 0 && (
-                    <>
-                      {" · "}
-                      {lockedByAmount ? (
-                        <span style={{ color: "var(--warn)" }}>
-                          <Lock size={10} style={{ verticalAlign: "-1px" }} /> {money.format(a.minAmount)}+
-                        </span>
-                      ) : (
-                        `${money.format(a.minAmount)}+`
-                      )}
-                    </>
-                  )}
-                </span>
-                {a.kind === "invest" && (
-                  <span className="apy">
-                    <TrendingUp size={11} style={{ verticalAlign: "-1px" }} />{" "}
-                    {a.projectedApy ? `${a.projectedApy}%` : "—"}
+        <div className="agent-grid">
+          {agents.map((a) => {
+            const lockedByAmount = available < a.minAmount;
+            const inBand =
+              riskScore == null || (riskScore >= a.riskBand[0] && riskScore <= a.riskBand[1]);
+            const unlocked = !lockedByAmount && inBand;
+            return (
+              <div className={`agent ${unlocked ? "unlocked" : "locked"}`} key={a.id}>
+                <div className="agent-top">
+                  <span className={`agent-dot ${a.online ? "online" : ""}`}>
+                    <i />
+                    {a.online ? "Active" : "Offline"}
                   </span>
-                )}
+                  {a.dynamic ? (
+                    <span className="tag good">Custom</span>
+                  ) : a.kind === "reserve" ? (
+                    <span className="tag neutral">Reserve</span>
+                  ) : inBand && riskScore != null ? (
+                    <span className="tag good">Matched</span>
+                  ) : null}
+                </div>
+                <h3>{a.title}</h3>
+                <p className="desc">{a.strategy ?? a.description}</p>
+                <div className="agent-foot">
+                  <span>
+                    Risk {a.riskBand[0]}–{a.riskBand[1]}
+                    {a.minAmount > 0 && (
+                      <>
+                        {" · "}
+                        {lockedByAmount ? (
+                          <span style={{ color: "var(--warn)" }}>
+                            <Lock size={10} style={{ verticalAlign: "-1px" }} />{" "}
+                            {money.format(a.minAmount)}+
+                          </span>
+                        ) : (
+                          `${money.format(a.minAmount)}+`
+                        )}
+                      </>
+                    )}
+                  </span>
+                  {a.kind === "invest" && (
+                    <span className="apy" title="Estimated growth per year">
+                      <TrendingUp size={11} style={{ verticalAlign: "-1px" }} />{" "}
+                      {a.projectedApy ? `≈${a.projectedApy}%/yr` : "—"}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-          );
-        })}
-        {agents.length === 0 && <p className="muted">Loading agents…</p>}
-      </div>
-
-      <div className="divider" />
-      <p className="section-label">Agent activity</p>
-      {agentEvents.length === 0 ? (
-        <p className="muted" style={{ marginTop: 8 }}>
-          Routing activity will appear here after you invest.
-        </p>
-      ) : (
-        <div className="activity" style={{ marginTop: 10 }}>
-          {agentEvents.map((e) => (
-            <div className="event" key={e.id}>
-              <span className="dot" />
-              <div className="event-body">
-                <p>{e.message}</p>
-                <time>{formatDate(e.createdAt)}</time>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+          {agents.length === 0 && <p className="muted">Loading helpers…</p>}
         </div>
-      )}
+
+        <div className="divider" />
+        <p className="section-label">Helper activity</p>
+        {agentEvents.length === 0 ? (
+          <p className="muted" style={{ marginTop: 8 }}>
+            Activity will appear here after you put money to work.
+          </p>
+        ) : (
+          <div className="list" style={{ marginTop: 10 }}>
+            {agentEvents.map((e) => (
+              <div className="event" key={e.id}>
+                <span className="dot" />
+                <div className="event-body">
+                  <p>{e.message}</p>
+                  <time>{formatDate(e.createdAt)}</time>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -686,7 +733,7 @@ function PortfolioCard({
 }) {
   const max = Math.max(...buckets.map((b) => b.balance), 1);
   return (
-    <div className="card panel">
+    <div className="panel" style={{ flex: "none" }}>
       <div className="panel-head" style={{ marginBottom: 4 }}>
         <div>
           <p className="eyebrow">Portfolio</p>
@@ -742,14 +789,14 @@ function RiskBadge({ score }: { score: number | null }) {
 
 function ActivityCard({ events }: { events: WalletEvent[] }) {
   return (
-    <div className="card panel">
-      <div className="panel-head" style={{ marginBottom: 4 }}>
+    <div className="panel activity-card">
+      <div className="panel-head" style={{ marginBottom: 0 }}>
         <p className="section-label">Live activity</p>
         <span className="live-dot" />
       </div>
       {events.length === 0 ? (
-        <p className="muted" style={{ marginTop: 10 }}>
-          Payments, rules, and agent routes will stream here.
+        <p className="muted" style={{ marginTop: 12 }}>
+          Payments, rules, and money moves will stream here.
         </p>
       ) : (
         <div className="activity">

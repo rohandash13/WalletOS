@@ -17,7 +17,6 @@ import type {
   Automation as LedgerAutomation,
   EventType,
 } from "./wallet-types";
-import { BUCKET_LABELS } from "./wallet-types";
 import type {
   Portfolio as UiPortfolio,
   Bucket,
@@ -29,7 +28,7 @@ import type {
 } from "./types";
 import type { AgentTurn, AgentToolCall } from "./agent";
 import { getPortfolio, getEventsSince, listAutomations } from "./redis";
-import { getBalanceSnapshot } from "./tools";
+import { getBalanceSnapshot, automationLabel } from "./tools";
 
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
 
@@ -119,20 +118,12 @@ function nextRun(a: LedgerAutomation): string {
 }
 
 export function toUiAutomation(a: LedgerAutomation): UiAutomation {
-  const name =
-    a.type === "recurring_transfer"
-      ? `Send $${a.amount ?? 0} ${a.schedule ?? "monthly"}`.trim()
-      : `Protect ${a.bucket ? BUCKET_LABELS[a.bucket] : "funds"}`;
   return {
     id: a.id,
-    name,
+    name: automationLabel(a),
     status: a.active ? "active" : "paused",
     nextRunAt: nextRun(a),
-    explanation:
-      a.note ??
-      (a.type === "recurring_transfer"
-        ? `Automatically sends $${a.amount ?? 0} on schedule.`
-        : `Keeps $${a.amount ?? 0} reserved and protected first.`),
+    explanation: a.note ?? "Runs automatically on schedule.",
   };
 }
 

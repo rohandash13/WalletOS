@@ -1,29 +1,30 @@
-Redesign UI as a platform + expand agent marketplace
+Plain-language content, richer automations, left-sidebar full-height layout
 
-Frontend
-- New pastel-green design system (pastel-green canvas, white surfaces,
-  dark-green primary, tan accents); smaller type scale; far fewer boxes.
-- Drop the oversized "Private Banker for the 99%" hero, mission strip, fake
-  scripted progress steps, mic button, and the always-$0 Family Payment bucket.
-- Remove the "Demo only" badge; keep a "Testnet USDC" pill.
-- Two-column platform layout (chat/automations/agents + portfolio/activity).
+Product breadth + financial literacy focus — written for everyone, no crypto
+jargon.
 
-Functionality
-- Automations tab: manual create form (recurring transfer / protect funds),
-  posting to the existing POST /api/automations.
-- Agent marketplace: live roster fetched from /api/marketplace with online
-  status, risk band, representative APY, and unlock state by risk + balance.
-- Create agents on the fly: POST /api/marketplace turns a plain-English goal
-  into a structured strategy spec via Claude (lib/agent-factory), persisted in
-  the registry and served by the shared local strategy engine (~4-5s, one call).
-- Expand the roster to 6 risk-tiered agents (Savings, Stable-Invest,
-  Balanced-Growth, Growth [min $500], High-Yield [min $1000], Bill-Pay) with
-  new uAgents (ports 8004-8006) + strategies; auto-selection gates by risk AND
-  amount, stepping down when the balance can't unlock a tier.
+Layout
+- Move Chat / Automations / Agents into a left sidebar; brand, Testnet pill,
+  and Reset live there too.
+- Fixed full-height app: no whole-page scroll; only the chat thread and live
+  activity scroll. Three aligned columns (nav · main · portfolio+activity)
+  that fill the screen.
 
-Portfolio buckets simplified to Available / Protected / Invested; all investing
-agents pool into the Invested bucket so the marketplace can grow without adding
-buckets. Verified live: build + lint green, demo + recovery prompts, high-risk
-routing to High-Yield, manual automation, and dynamic agent creation.
+Plain language (no blockchain buzzwords)
+- Agent roster + strategies + explanations rewritten in everyday terms; plain
+  allocation buckets (safe_savings / steady_growth / higher_growth / cash_reserve)
+  in both lib/marketplace.ts and agent-service/strategies.py.
+- Dynamic agent generator (lib/agent-factory) now produces jargon-free,
+  goal-oriented strategies; relatable create placeholder.
+- Agent box percentage relabeled "≈X%/yr" (estimated yearly growth) with tooltip.
+
+Automations breadth
+- Manual create form now offers everyday templates: pay a bill, send to family,
+  auto-save from paycheck, set aside/protect, invest on a schedule, round-up
+  savings, smart credit-card payment, split paycheck, low-balance alert, watch
+  subscriptions. Backend gains a generic "rule" automation type + category +
+  percent/threshold fields and friendly labels (automationLabel).
+
+Verified: build + lint green.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

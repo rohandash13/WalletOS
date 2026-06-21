@@ -29,7 +29,7 @@ const EMIT_TOOL: Anthropic.Tool = {
       allocation: {
         type: "object",
         description:
-          "Asset weights that sum to ~1.0, keys snake_case (e.g. stablecoin_yield, blue_chip_staking, defi_liquidity, defi_yield_farming, momentum_basket).",
+          "Weights that sum to ~1.0 using ONLY these plain buckets: safe_savings, steady_growth, higher_growth, cash_reserve. No crypto/financial jargon.",
         additionalProperties: { type: "number" },
       },
       riskLow: { type: "number", description: "Lowest risk score served (1-10)." },
@@ -50,11 +50,14 @@ const EMIT_TOOL: Anthropic.Tool = {
   },
 };
 
-const SYSTEM = `You design specialized crypto-investing "agents" for a testnet wallet app. \
-Given a user's goal, produce ONE realistic strategy spec via the emit_agent tool. \
-Keep APY realistic for the risk (conservative 3-5%, balanced 7-10%, aggressive 12-25%). \
-Higher risk → more volatile allocation (DeFi/momentum); lower risk → stablecoin yield / T-bills. \
-Allocation weights must sum to about 1.0.`;
+const SYSTEM = `You design simple money "agents" for an everyday banking app built around \
+financial literacy. Given a person's goal, produce ONE strategy spec via the emit_agent tool. \
+Write for EVERYONE — plain, friendly, no jargon, no crypto/blockchain terms (no "staking", \
+"DeFi", "tokens", "ETH", etc.). Talk in terms of saving, growing, and protecting money. \
+Keep the yearly growth realistic for the risk (safe 3-5%, balanced 6-10%, aggressive 12-25%). \
+Higher risk → more "higher_growth"; lower risk → more "safe_savings". \
+Use ONLY these allocation buckets and make them sum to about 1.0: \
+safe_savings, steady_growth, higher_growth, cash_reserve.`;
 
 function slugify(s: string): string {
   return (

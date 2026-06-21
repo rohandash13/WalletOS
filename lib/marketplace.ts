@@ -1,10 +1,14 @@
 /**
  * lib/marketplace.ts — the Fetch AI uAgent marketplace, from the backend's side.
  *
- * A risk-tiered registry of specialized investing agents plus risk/amount gating
- * (which agent a given risk score + balance routes to), and the HTTP call into a
- * uAgent's /route endpoint. If the Python service is down, we fall back to identical
- * local strategy math so the backend is always functional.
+ * A risk-tiered registry of investing agents plus risk/amount gating (which agent a
+ * given risk score + balance routes to), and the HTTP call into a uAgent's /route
+ * endpoint. If the Python service is down, we fall back to identical local strategy
+ * math so the backend is always functional.
+ *
+ * Everything is described in plain, everyday language (no crypto jargon) — the goal
+ * is financial literacy for everyone. Allocations use four simple buckets:
+ *   safe_savings · steady_growth · higher_growth · cash_reserve
  *
  * All investing agents settle into the logical `stable_invest` ("Invested") bucket;
  * the reserve agent settles into `rent`. Agents differ by strategy + risk tier, not
@@ -39,7 +43,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "savings",
     title: "Savings",
-    description: "Liquid, capital-preserving savings with no lockup. Capital first.",
+    description: "Keeps your money safe and easy to reach, with a little growth.",
     endpoint: process.env.SAVINGS_AGENT_URL ?? "http://127.0.0.1:8002",
     riskBand: [1, 2],
     minAmount: 0,
@@ -49,7 +53,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "stable_invest",
     title: "Stable-Invest",
-    description: "Stablecoin yield + tokenized T-bills with a small growth sleeve.",
+    description: "Steady, low-risk growth that aims to beat a regular savings account.",
     endpoint: process.env.STABLE_INVEST_AGENT_URL ?? "http://127.0.0.1:8001",
     riskBand: [3, 4],
     minAmount: 0,
@@ -59,7 +63,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "balanced_growth",
     title: "Balanced-Growth",
-    description: "A balanced mix of stable yield and blue-chip staking for steady growth.",
+    description: "A balanced mix of safe and growing money for steady progress.",
     endpoint: process.env.BALANCED_GROWTH_AGENT_URL ?? "http://127.0.0.1:8004",
     riskBand: [5, 6],
     minAmount: 0,
@@ -69,7 +73,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "growth",
     title: "Growth",
-    description: "Blue-chip crypto + DeFi liquidity for higher returns and volatility.",
+    description: "Aims for higher growth over time, with more ups and downs.",
     endpoint: process.env.GROWTH_AGENT_URL ?? "http://127.0.0.1:8005",
     riskBand: [7, 8],
     minAmount: 500,
@@ -79,7 +83,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "high_yield",
     title: "High-Yield",
-    description: "Aggressive DeFi yield farming + momentum. High risk, high potential.",
+    description: "The highest growth potential — higher risk and bigger swings.",
     endpoint: process.env.HIGH_YIELD_AGENT_URL ?? "http://127.0.0.1:8006",
     riskBand: [9, 10],
     minAmount: 1000,
@@ -89,7 +93,7 @@ export const AGENTS: MarketplaceAgent[] = [
   {
     id: "bill_pay",
     title: "Bill-Pay",
-    description: "A liquid reserve that guarantees your scheduled bills never bounce.",
+    description: "Sets aside money so your bills are always covered.",
     endpoint: process.env.BILL_PAY_AGENT_URL ?? "http://127.0.0.1:8003",
     riskBand: [1, 10],
     minAmount: 0,
@@ -158,7 +162,7 @@ export function selectAgent(
   return eligible[0] ?? getAgent("stable_invest")!;
 }
 
-/** Representative APY for display (built-ins compute at route time). */
+/** Representative est. yearly growth for display (built-ins compute at route time). */
 export function previewApy(agent: MarketplaceAgent): number {
   if (agent.plan) return agent.plan.projectedApy;
   const mid = Math.round((agent.riskBand[0] + agent.riskBand[1]) / 2);
@@ -180,7 +184,7 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Local mirror of agent-service/strategies.py — keeps the backend self-sufficient. */
+/** Local mirror of agent-service/strategies.py — plain-language, no jargon. */
 function localPlan(agent: MarketplaceAgent, amount: number, riskScore: number): RoutePlan {
   const r = Math.max(1, Math.min(10, Math.round(riskScore)));
 
@@ -192,7 +196,7 @@ function localPlan(agent: MarketplaceAgent, amount: number, riskScore: number): 
       strategy: agent.plan.strategy,
       allocation: agent.plan.allocation,
       projectedApy: agent.plan.projectedApy,
-      explanation: `Placed ${amount} USDC with ${agent.title} (~${agent.plan.projectedApy}% projected APY).`,
+      explanation: `I put ${amount} USDC into ${agent.title} (aiming for about ${agent.plan.projectedApy}% a year).`,
       live: false,
     };
   }
@@ -200,60 +204,58 @@ function localPlan(agent: MarketplaceAgent, amount: number, riskScore: number): 
   let allocation: Record<string, number>;
   let apy: number;
   let strategy: string;
+  let explanation: string;
 
   switch (agent.id) {
     case "savings":
-      allocation = { stablecoin_yield: 0.85, tokenized_tbills: 0.15 };
+      allocation = { safe_savings: 0.9, steady_growth: 0.1 };
       apy = round2(3 + r * 0.15);
-      strategy = "Liquid preservation — instant-access stablecoin savings";
+      strategy = "Keeps your money safe and easy to reach, earning a little extra.";
+      explanation = `I put ${amount} USDC into Savings — safe, easy to access, earning about ${apy}% a year with no lock-up.`;
       break;
     case "balanced_growth": {
-      const stable = Math.max(0.35, 0.7 - r * 0.04);
+      const safe = round2(Math.max(0.3, 0.55 - r * 0.03));
       allocation = {
-        stablecoin_yield: round2(stable),
-        blue_chip_staking: round2((1 - stable) * 0.6),
-        defi_liquidity: round2((1 - stable) * 0.4),
+        safe_savings: safe,
+        steady_growth: round2((1 - safe) * 0.7),
+        higher_growth: round2((1 - safe) * 0.3),
       };
       apy = round2(6 + r * 0.8);
-      strategy = "Balanced stable yield + blue-chip staking for steady growth";
+      strategy = "A balanced mix of safe and growing money for steady progress.";
+      explanation = `I put ${amount} USDC into Balanced-Growth — a mix of safe and growing money for steady progress. About ${apy}% a year, with some ups and downs.`;
       break;
     }
     case "growth": {
-      const blue = Math.min(0.6, 0.3 + r * 0.04);
+      const higher = round2(Math.min(0.6, 0.3 + r * 0.04));
       allocation = {
-        blue_chip_staking: round2(blue),
-        defi_liquidity: round2((1 - blue) * 0.6),
-        stablecoin_yield: round2((1 - blue) * 0.4),
+        higher_growth: higher,
+        steady_growth: round2((1 - higher) * 0.7),
+        safe_savings: round2((1 - higher) * 0.3),
       };
       apy = round2(9 + r * 1.2);
-      strategy = "Blue-chip crypto + DeFi liquidity for higher growth";
+      strategy = "Aims for higher growth over time, with more ups and downs.";
+      explanation = `I put ${amount} USDC into Growth — aiming for higher returns over time. Expect more ups and downs. About ${apy}% a year.`;
       break;
     }
     case "high_yield":
-      allocation = {
-        defi_yield_farming: 0.55,
-        momentum_basket: 0.3,
-        blue_chip_staking: 0.15,
-      };
+      allocation = { higher_growth: 0.8, steady_growth: 0.2 };
       apy = round2(12 + r * 1.6);
-      strategy = "Aggressive DeFi yield farming + momentum basket";
+      strategy = "The highest growth potential — higher risk and bigger swings.";
+      explanation = `I put ${amount} USDC into High-Yield — the most aggressive option, aiming for the highest growth. Big swings, so keep only money you won't need soon here. About ${apy}% a year.`;
       break;
     case "bill_pay":
-      allocation = { liquid_reserve: 1 };
+      allocation = { cash_reserve: 1 };
       apy = 0;
-      strategy = "Liquid reserve earmarked for scheduled bills";
+      strategy = "Sets aside money so your bills are always covered.";
+      explanation = `I set aside ${amount} USDC with Bill-Pay so your scheduled bills are always covered and never bounce.`;
       break;
     case "stable_invest":
     default: {
-      const stable = Math.max(0.4, 1 - r * 0.06);
-      const rest = (1 - stable) / 2;
-      allocation = {
-        stablecoin_yield: round2(stable),
-        tokenized_tbills: round2(rest),
-        blue_chip_staking: round2(rest),
-      };
+      const safe = round2(Math.max(0.5, 1 - r * 0.08));
+      allocation = { safe_savings: safe, steady_growth: round2(1 - safe) };
       apy = round2(3.5 + r * 0.55);
-      strategy = "Capital-preservation core with a small risk-scaled growth sleeve";
+      strategy = "Steady, low-risk growth that beats a regular savings account.";
+      explanation = `I put ${amount} USDC into Stable-Invest — mostly safe holdings with a little steady growth. Low ups and downs, about ${apy}% a year.`;
       break;
     }
   }
@@ -264,7 +266,7 @@ function localPlan(agent: MarketplaceAgent, amount: number, riskScore: number): 
     strategy,
     allocation,
     projectedApy: apy,
-    explanation: `Placed ${amount} USDC with ${agent.title} at ${r}/10 risk — ${strategy.toLowerCase()}. ~${apy}% APY.`,
+    explanation,
     live: false,
   };
 }

@@ -61,10 +61,18 @@ export interface AppEvent {
 
 export interface Automation {
   id: string;
-  type: "recurring_transfer" | "protect_bucket";
+  /** recurring_transfer + protect_bucket move money; "rule" is a recorded plan. */
+  type: "recurring_transfer" | "protect_bucket" | "rule";
+  /** Friendly template, e.g. bill, family, auto_save, recurring_invest, roundup,
+   *  smart_card, paycheck_split, low_balance_alert, subscription_watch. */
+  category?: string;
   amount?: number;
+  /** For percentage-based rules (e.g. "save 20% of each paycheck"). */
+  percent?: number;
+  /** For alerts / smart payments (e.g. balance threshold). */
+  threshold?: number;
   to?: string;
-  /** e.g. "monthly", "monthly:1" (1st of month). Free-form for the MVP. */
+  /** e.g. "monthly", "weekly", "monthly:1" (1st of month). Free-form for the MVP. */
   schedule?: string;
   bucket?: BucketId;
   note?: string;
