@@ -430,7 +430,7 @@ export function WalletDemo({
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ approvalThreshold: threshold }),
+        body: JSON.stringify({ approvalThreshold: threshold, riskScore }),
       });
     } catch {
       /* setting is best-effort; agent still works without it */

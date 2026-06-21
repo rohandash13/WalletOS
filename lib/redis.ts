@@ -247,6 +247,8 @@ export interface StoredPolicy {
    * or below this auto-execute; above it the agent asks the user to confirm first.
    */
   approvalThreshold?: number;
+  /** The user's risk score 1-10 (source of truth for the UI badge). */
+  riskScore?: number;
 }
 
 export async function getStoredPolicy(userId: string = USER_ID): Promise<StoredPolicy | null> {

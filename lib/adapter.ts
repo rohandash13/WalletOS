@@ -195,6 +195,14 @@ export function toActions(toolCalls: AgentToolCall[]): Action[] {
 }
 
 function extractRisk(toolCalls: AgentToolCall[]): number | undefined {
+  // An explicit set_policy this turn is the strongest signal (latest wins).
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const c = toolCalls[i];
+    if (c.name === "set_policy") {
+      const r = Number(asRecord(c.input).riskScore);
+      if (Number.isFinite(r)) return Math.max(1, Math.min(10, Math.round(r)));
+    }
+  }
   for (const c of toolCalls) {
     if (c.name === "route_to_agent") {
       const r = Number(asRecord(c.input).riskScore);
@@ -212,9 +220,10 @@ function normalizeRisk(n: number): number | undefined {
 /** Pull a risk score the user stated in plain text, so the badge updates live. */
 export function extractRiskFromText(text: string): number | undefined {
   const patterns = [
-    /(?:risk|comfort)[^\d]{0,20}(\d{1,2})(?:\s*(?:\/|out of)\s*10)?/i,
-    /(\d{1,2})\s*(?:\/|out of)\s*10\s*(?:on\s*)?(?:risk)?/i,
-    /i['’]?\s*m\s*a?\s*(\d{1,2})\s*(?:\/|out of)\s*10/i,
+    /(\d{1,2})\s*(?:\/|out of)\s*10/i, // "3 out of 10", "3/10"
+    /\brisk\b[^.]{0,30}?\b(?:to|at|of)\s+(\d{1,2})\b/i, // "risk ... set it to 3"
+    /\bset\s+(?:it|my\s+risk|risk)?\s*(?:to|at)\s+(\d{1,2})\b/i, // "set it to 3"
+    /(?:risk|comfort)[^\d]{0,20}(\d{1,2})/i, // "risk score 3"
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -251,10 +260,13 @@ export async function toChatResponse(
     listAutomations(50, userId),
     getStoredPolicy(userId),
   ]);
-  // Prefer a risk score the agent acted on; otherwise one the user stated in text,
-  // so saying "I'm a 3 out of 10" mid-chat updates the badge.
+  // Prefer a risk score the agent acted on this turn (set_policy/route_to_agent),
+  // then one the user stated in text, then the persisted value — so saying
+  // "set my risk to 3" mid-chat updates the badge and it stays put afterward.
   const riskScore =
-    extractRisk(turn.toolCalls) ?? (userText ? extractRiskFromText(userText) : undefined);
+    extractRisk(turn.toolCalls) ??
+    (userText ? extractRiskFromText(userText) : undefined) ??
+    policy?.riskScore;
   return {
     assistantMessage: turn.reply,
     actions: toActions(turn.toolCalls),

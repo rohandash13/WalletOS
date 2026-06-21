@@ -87,10 +87,15 @@ export const tools: Anthropic.Tool[] = [
   {
     name: "set_policy",
     description:
-      "Update the user's spending policy. Use 'approvalThreshold' to change the 'approve before moving money' limit when the user asks (e.g. 'approve anything over $200', 'change my limit to $50', 'require approval above $500'). Also supports a hard per-transaction max and a recipient allowlist.",
+      "Update the user's preferences. Use 'riskScore' (1-10) when the user states or changes their risk tolerance (e.g. 'set my risk to 3', 'I'm a 3 out of 10', 'make me more conservative'). Use 'approvalThreshold' to change the 'approve before moving money' limit when the user asks (e.g. 'approve anything over $200', 'change my limit to $50'). Also supports a hard per-transaction max and a recipient allowlist.",
     input_schema: {
       type: "object",
       properties: {
+        riskScore: {
+          type: "number",
+          description:
+            "The user's risk tolerance, 1 (most conservative) to 10 (most aggressive). Set this whenever the user states or changes their risk score.",
+        },
         approvalThreshold: {
           type: "number",
           description:
@@ -335,17 +340,30 @@ async function handleSetPolicy(input: Record<string, unknown>, userId: string) {
   }
   getWallet().setPolicy(patch);
 
-  // Persist (incl. the approve-before-moving-money threshold) across requests.
+  // Persist (incl. the approve-before-moving-money threshold and risk score).
   const stored = (await getStoredPolicy(userId)) ?? {};
   const merged = { ...stored, ...patch };
+  let changedThreshold = false;
+  let changedRisk = false;
   if (input.approvalThreshold != null) {
     const t = Number(input.approvalThreshold);
-    if (Number.isFinite(t) && t >= 0) merged.approvalThreshold = Math.round(t);
+    if (Number.isFinite(t) && t >= 0) {
+      merged.approvalThreshold = Math.round(t);
+      changedThreshold = true;
+    }
+  }
+  if (input.riskScore != null) {
+    const r = Number(input.riskScore);
+    if (Number.isFinite(r)) {
+      merged.riskScore = Math.max(1, Math.min(10, Math.round(r)));
+      changedRisk = true;
+    }
   }
   await setStoredPolicy(merged, userId);
 
-  const summary =
-    merged.approvalThreshold != null
+  const summary = changedRisk
+    ? `Risk score updated to ${merged.riskScore}/10`
+    : changedThreshold
       ? `Approval limit updated: ask above $${merged.approvalThreshold}`
       : `Policy updated: max ${merged.maxUsdcPerTx} USDC/tx`;
   await publishEvent("policy", summary, merged, userId);

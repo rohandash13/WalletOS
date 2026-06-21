@@ -50,10 +50,13 @@ export async function POST(req: NextRequest) {
       // Approval is now the operative gate; lift the hard reject out of the way.
       maxUsdcPerTx: HARD_CAP_WHEN_APPROVAL_SET,
     };
+    const risk = Number(body?.riskScore);
+    if (Number.isFinite(risk)) next.riskScore = Math.max(1, Math.min(10, Math.round(risk)));
     await setStoredPolicy(next, session.userId);
     return NextResponse.json({
       approvalThreshold: next.approvalThreshold,
       maxUsdcPerTx: next.maxUsdcPerTx,
+      riskScore: next.riskScore,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
