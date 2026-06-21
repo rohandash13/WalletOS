@@ -62,6 +62,9 @@ type AgentInvestment = {
   onChainValue: number;
   projectedApy: number;
   projectedAnnualGrowth: number;
+  currentValue: number;
+  gain: number;
+  gainPct: number;
   agentAddress: string;
   explorerUrl: string;
 };
@@ -798,7 +801,8 @@ function MarketplacePanel({
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const agentEvents = events.filter((e) => e.type === "agent_routed");
-  const totalInvested = investments.reduce((s, a) => s + a.invested, 0);
+  const totalValue = investments.reduce((s, a) => s + a.currentValue, 0);
+  const totalGain = investments.reduce((s, a) => s + a.gain, 0);
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -893,7 +897,10 @@ function MarketplacePanel({
             <div className="divider" />
             <div className="panel-head" style={{ marginBottom: 8 }}>
               <p className="section-label">Invested funds</p>
-              <span className="tag good">{money.format(totalInvested)} working</span>
+              <span className="tag good">
+                {money.format(totalValue)}
+                {totalGain > 0 ? ` · +${money.format(totalGain)}` : " working"}
+              </span>
             </div>
             <div className="list">
               {investments.map((inv) => (
@@ -904,10 +911,18 @@ function MarketplacePanel({
                   <div className="row-main">
                     <h3>{inv.title}</h3>
                     <p>
-                      {money.format(inv.invested)} invested
-                      {inv.projectedApy > 0 && (
-                        <> · ≈{inv.projectedApy}%/yr (+{money.format(inv.projectedAnnualGrowth)})</>
+                      Now worth <strong>{money.format(inv.currentValue)}</strong>
+                      {inv.gain > 0 && (
+                        <span className="apy">
+                          {" "}
+                          <TrendingUp size={11} style={{ verticalAlign: "-1px" }} /> +
+                          {money.format(inv.gain)} ({inv.gainPct}%)
+                        </span>
                       )}
+                    </p>
+                    <p className="sub">
+                      {money.format(inv.invested)} invested
+                      {inv.projectedApy > 0 && <> · ≈{inv.projectedApy}%/yr</>}
                       {inv.onChainUsdc > 0 && <> · {inv.onChainUsdc} USDC on-chain</>}
                     </p>
                   </div>
